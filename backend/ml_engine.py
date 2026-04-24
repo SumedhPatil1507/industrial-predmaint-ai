@@ -2,11 +2,9 @@
 import numpy as np
 import pandas as pd
 import joblib
-import shap
 from pathlib import Path
-from sklearn.ensemble import RandomForestClassifier, IsolationForest, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, roc_auc_score
 import logging
@@ -169,29 +167,30 @@ def _risk_level(prob: float) -> str:
 # ── SHAP ─────────────────────────────────────────────────────────────────────
 
 def compute_shap(df: pd.DataFrame, max_rows: int = 300) -> dict:
+    try:
+        import shap as shap_lib
+    except ImportError:
+        return {"feature_importance": {}, "shap_values": [], "feature_names": []}
+
     rf, _, _, feat_cols = load_artifacts()
     df = engineer_features(df)
-    # Pad missing columns so shape always matches model
     for c in feat_cols:
         if c not in df.columns:
             df[c] = 0
     X = df[feat_cols].fillna(0).head(max_rows)
-    explainer = shap.TreeExplainer(rf)
+
+    explainer = shap_lib.TreeExplainer(rf)
     shap_vals = explainer.shap_values(X)
 
-    # Handle both old (list) and new (ndarray) SHAP output formats
     if isinstance(shap_vals, list):
-        sv = np.array(shap_vals[1])          # class 1 for binary
+        sv = np.array(shap_vals[1])
     elif isinstance(shap_vals, np.ndarray) and shap_vals.ndim == 3:
-        sv = shap_vals[:, :, 1]              # shape (samples, features, classes)
+        sv = shap_vals[:, :, 1]
     else:
         sv = np.array(shap_vals)
 
-    mean_abs = np.abs(sv).mean(axis=0)
-    # Ensure scalar floats — guard against any array leakage
-    importance = {}
-    for k, v in zip(feat_cols, mean_abs.flatten()):
-        importance[k] = round(float(v), 4)
+    mean_abs = np.abs(sv).mean(axis=0).flatten()
+    importance = {k: round(float(v), 4) for k, v in zip(feat_cols, mean_abs)}
     shap_list = [[round(float(x), 4) for x in row] for row in sv]
     return {
         "feature_importance": importance,
