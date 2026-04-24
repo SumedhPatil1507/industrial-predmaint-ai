@@ -4,8 +4,9 @@ import pandas as pd
 import joblib
 import shap
 from pathlib import Path
-from sklearn.ensemble import RandomForestClassifier, IsolationForest
-from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier, IsolationForest, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, roc_auc_score
 import logging
@@ -83,8 +84,7 @@ def train_model(df: pd.DataFrame) -> dict:
     joblib.dump(scaler, MODEL_DIR / "scaler.pkl")
     joblib.dump(feat_cols, MODEL_DIR / "feature_cols.pkl")
 
-    logger.info(f"Model trained. AUC={auc:.4f}")
-    return {
+    metrics = {
         "accuracy": report["accuracy"],
         "auc": auc,
         "precision_breakdown": report.get("1", {}).get("precision", 0),
@@ -94,6 +94,17 @@ def train_model(df: pd.DataFrame) -> dict:
         "n_train": len(X_train),
         "n_test": len(X_test),
     }
+
+    # Register in model registry
+    from backend.model_registry import register_model
+    version = register_model(
+        metrics=metrics,
+        params={"n_estimators": 200, "max_depth": 15, "class_weight": "balanced"},
+        dataset_info={"rows": len(df), "features": feat_cols},
+    )
+    metrics["version"] = version
+    logger.info(f"Model trained. AUC={auc:.4f} version={version}")
+    return metrics
 
 
 # ── Inference ─────────────────────────────────────────────────────────────────

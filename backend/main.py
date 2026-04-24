@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 
 from backend import ml_engine, alerts, llm_advisor, iot_simulator, file_parser, downtime_calculator
+from backend import health_score, ttf_predictor, model_registry
 from backend.database import insert_audit_log, insert_prediction
 
 logging.basicConfig(level=logging.INFO)
@@ -199,3 +200,45 @@ async def live_sensors(websocket: WebSocket):
         await iot_simulator.stream_sensor_data(websocket, interval=1.0)
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
+
+
+# ── Health Score ──────────────────────────────────────────────────────────────
+
+@app.post("/health-score")
+async def get_health_score(reading: SensorReading):
+    result = health_score.compute_health_score(reading.model_dump())
+    return result.__dict__
+
+
+@app.post("/fleet-health")
+async def get_fleet_health(file: UploadFile = File(...)):
+    content = await file.read()
+    df = file_parser.parse_upload(file.filename, content)
+    result = health_score.compute_fleet_health(df)
+    return result.to_dict(orient="records")
+
+
+# ── Time-to-Failure ───────────────────────────────────────────────────────────
+
+@app.post("/ttf")
+async def time_to_failure(file: UploadFile = File(...)):
+    content = await file.read()
+    df = file_parser.parse_upload(file.filename, content)
+    if "asset_tag" not in df.columns:
+        raise HTTPException(422, "Dataset must have 'asset_tag' column")
+    results = ttf_predictor.fleet_ttf(df)
+    await insert_audit_log("ttf_analysis", "dataset", file.filename, {"assets": len(results)})
+    return {"results": results}
+
+
+# ── Model Registry ────────────────────────────────────────────────────────────
+
+@app.get("/model-registry")
+async def get_model_registry():
+    registry = model_registry.get_registry()
+    comparison = model_registry.compare_models()
+    return {
+        "registry": registry,
+        "comparison": comparison.to_dict(orient="records") if not comparison.empty else [],
+        "active_version": model_registry.get_active_version(),
+    }

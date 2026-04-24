@@ -67,3 +67,24 @@ def get_audit_logs(limit: int = 100):
         r = c.get(f"/audit-logs?limit={limit}")
         r.raise_for_status()
         return r.json()
+
+
+def get_health_score(payload: dict):
+    with _client() as c:
+        r = c.post("/health-score", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+
+def get_ttf(file_bytes: bytes, filename: str):
+    with _client() as c:
+        r = c.post("/ttf", files={"file": (filename, file_bytes, "application/octet-stream")})
+        r.raise_for_status()
+        return r.json()
+
+
+def get_model_registry():
+    with _client() as c:
+        r = c.get("/model-registry")
+        r.raise_for_status()
+        return r.json()

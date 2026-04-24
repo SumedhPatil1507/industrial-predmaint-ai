@@ -61,6 +61,9 @@ with st.sidebar:
         "🤖 Predict Breakdown",
         "🔴 Live IoT Monitor",
         "🔍 SHAP Explainability",
+        "❤️ Machine Health Score",
+        "⏱️ Time-to-Failure",
+        "📈 Model Registry",
         "💰 Downtime Calculator",
         "🧠 AI Maintenance Advisor",
         "📋 Audit Logs",
@@ -89,7 +92,7 @@ if page == "🏠 Dashboard":
     c1.metric("Dataset Records", "219,000", "3+ years")
     c2.metric("Machine Types", "5", "10 assets")
     c3.metric("Breakdown Rate", "~9.9%", "Class imbalance")
-    c4.metric("Target Reduction", "40–60%", "Unplanned downtime")
+    c4.metric("Target Reduction", "40-60%", "Unplanned downtime")
 
     st.divider()
     col1, col2 = st.columns(2)
@@ -104,6 +107,9 @@ if page == "🏠 Dashboard":
 - 💰 **Downtime Calculator** – INR/USD cost & ROI analysis
 - 🚨 **Alerts** – Slack + Email on breakdown prediction
 - 📋 **Audit Logs** – Legal-grade Supabase logging
+- ❤️ **Health Score** – Per-machine 0-100 health index
+- ⏱️ **Time-to-Failure** – Days until predicted breakdown
+- 📈 **Model Registry** – Version, compare & track all training runs
         """)
     with col2:
         st.subheader("🏭 Supported Machines")
@@ -601,3 +607,233 @@ elif page == "📋 Audit Logs":
 | `llm_advise` | AI advisor consulted |
 | `alert_sent` | Slack/Email alert fired |
     """)
+
+
+# =============================================================================
+# PAGE: MACHINE HEALTH SCORE
+# =============================================================================
+if page == "❤️ Machine Health Score":
+    st.title("❤️ Machine Health Score")
+    st.markdown("Real-time 0-100 health index per asset based on weighted sensor deviation from normal thresholds.")
+
+    tab1, tab2 = st.tabs(["Single Asset", "Fleet Upload"])
+
+    with tab1:
+        col1, col2 = st.columns(2)
+        with col1:
+            asset_tag = st.text_input("Asset Tag", "CNC-001", key="hs_tag")
+            machine_type = st.selectbox("Machine Type",
+                ["CNC Lathe", "Hydraulic Press", "Belt Conveyor", "Screw Compressor", "EOT Crane"],
+                key="hs_mtype")
+            temp_bearing = st.slider("Bearing Temp (C)", 30.0, 120.0, 68.0, key="hs_tb")
+            temp_motor = st.slider("Motor Temp (C)", 30.0, 130.0, 78.0, key="hs_tm")
+            vibration_h = st.slider("H-Vibration (mm/s)", 0.0, 15.0, 3.2, key="hs_vh")
+        with col2:
+            vibration_v = st.slider("V-Vibration (mm/s)", 0.0, 12.0, 2.5, key="hs_vv")
+            oil_pressure = st.slider("Oil Pressure (bar)", 0.0, 150.0, 5.2, key="hs_op")
+            load_pct = st.slider("Load (%)", 0.0, 100.0, 65.0, key="hs_lp")
+            shaft_rpm = st.slider("Shaft RPM", 0.0, 4000.0, 1200.0, key="hs_rpm")
+            power_kw = st.slider("Power (kW)", 0.0, 100.0, 24.0, key="hs_pw")
+
+        if st.button("Compute Health Score", type="primary"):
+            payload = {
+                "asset_tag": asset_tag, "machine_type": machine_type,
+                "temp_bearing_degC": temp_bearing, "temp_motor_degC": temp_motor,
+                "vibration_h_mms": vibration_h, "vibration_v_mms": vibration_v,
+                "oil_pressure_bar": oil_pressure, "load_pct": load_pct,
+                "shaft_rpm": shaft_rpm, "power_consumption_kw": power_kw,
+            }
+            try:
+                result = api_client.predict_single(payload)
+                # Compute health locally using backend module
+                import sys, os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from backend.health_score import compute_health_score
+                hs = compute_health_score(payload)
+
+                st.divider()
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Health Score", f"{hs.health_score}/100")
+                c2.metric("Status", hs.status)
+                c3.metric("Breakdown Prob", f"{result['probability']:.1%}")
+
+                # Health gauge
+                import plotly.graph_objects as go
+                color = "#2ecc71" if hs.health_score >= 75 else "#f39c12" if hs.health_score >= 50 else "#e74c3c"
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=hs.health_score,
+                    title={"text": f"Health Score - {asset_tag}"},
+                    gauge={
+                        "axis": {"range": [0, 100]},
+                        "bar": {"color": color},
+                        "steps": [
+                            {"range": [0, 50], "color": "#3a0a0a"},
+                            {"range": [50, 75], "color": "#3a3a0a"},
+                            {"range": [75, 100], "color": "#0a3a0a"},
+                        ],
+                        "threshold": {"line": {"color": "white", "width": 3}, "value": 75},
+                    },
+                ))
+                fig.update_layout(height=300, template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Component scores radar
+                import plotly.express as px
+                comp = hs.component_scores
+                fig2 = go.Figure(go.Scatterpolar(
+                    r=list(comp.values()),
+                    theta=list(comp.keys()),
+                    fill="toself",
+                    line_color=color,
+                ))
+                fig2.update_layout(
+                    polar=dict(radialaxis=dict(range=[0, 100])),
+                    title="Component Health Radar",
+                    template="plotly_dark", height=400,
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+                st.subheader("Recommendations")
+                for rec in hs.recommendations:
+                    st.markdown(f"- {rec}")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    with tab2:
+        uploaded = st.file_uploader("Upload fleet dataset", type=["csv", "xlsx", "json", "parquet"], key="hs_fleet")
+        if uploaded:
+            file_bytes = uploaded.read()
+            try:
+                from backend.file_parser import parse_upload
+                from backend.health_score import compute_fleet_health
+                df_fleet = parse_upload(uploaded.name, file_bytes)
+                fleet_df = compute_fleet_health(df_fleet)
+
+                st.dataframe(fleet_df.style.background_gradient(
+                    subset=["health_score"], cmap="RdYlGn"), use_container_width=True)
+
+                import plotly.express as px
+                fig = px.bar(fleet_df.groupby("asset_tag")["health_score"].mean().reset_index(),
+                             x="asset_tag", y="health_score", color="health_score",
+                             color_continuous_scale="RdYlGn", range_color=[0, 100],
+                             title="Fleet Health Scores", template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+
+# =============================================================================
+# PAGE: TIME-TO-FAILURE
+# =============================================================================
+elif page == "⏱️ Time-to-Failure":
+    st.title("⏱️ Time-to-Failure Prediction")
+    st.markdown("Estimates days until breakdown per asset using degradation trend analysis.")
+
+    uploaded = st.file_uploader("Upload historical dataset (needs asset_tag + sensor cols)",
+                                type=["csv", "xlsx", "json", "parquet"], key="ttf_file")
+    if uploaded:
+        file_bytes = uploaded.read()
+        if st.button("Estimate TTF for All Assets", type="primary"):
+            with st.spinner("Analysing degradation trends..."):
+                try:
+                    from backend.file_parser import parse_upload
+                    from backend.ttf_predictor import fleet_ttf
+                    df_ttf = parse_upload(uploaded.name, file_bytes)
+                    results = fleet_ttf(df_ttf)
+                    df_res = pd.DataFrame(results)
+
+                    st.divider()
+                    # Summary metrics
+                    critical = df_res[df_res["urgency"] == "Immediate"]
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Assets Analysed", len(df_res))
+                    c2.metric("Immediate Action", len(critical))
+                    c3.metric("Avg Days to Failure", f"{df_res['estimated_days'].mean():.0f}")
+
+                    # Color-coded table
+                    def color_urgency(val):
+                        colors = {"Immediate": "background-color:#5a0a0a",
+                                  "This Week": "background-color:#5a3a0a",
+                                  "This Month": "background-color:#3a3a0a",
+                                  "Routine": "background-color:#0a3a0a"}
+                        return colors.get(val, "")
+
+                    st.dataframe(
+                        df_res.style.applymap(color_urgency, subset=["urgency"]),
+                        use_container_width=True
+                    )
+
+                    # TTF bar chart
+                    import plotly.express as px
+                    fig = px.bar(df_res, x="asset_tag", y="estimated_days",
+                                 color="urgency",
+                                 color_discrete_map={
+                                     "Immediate": "#e74c3c", "This Week": "#e67e22",
+                                     "This Month": "#f1c40f", "Routine": "#2ecc71"
+                                 },
+                                 title="Estimated Days to Failure by Asset",
+                                 template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Degradation rate chart
+                    fig2 = px.scatter(df_res, x="degradation_rate", y="estimated_days",
+                                      color="urgency", text="asset_tag", size_max=15,
+                                      title="Degradation Rate vs Time-to-Failure",
+                                      template="plotly_dark")
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                    csv = df_res.to_csv(index=False)
+                    st.download_button("Download TTF Report", csv, "ttf_report.csv", "text/csv")
+
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+
+# =============================================================================
+# PAGE: MODEL REGISTRY
+# =============================================================================
+elif page == "📈 Model Registry":
+    st.title("📈 Model Registry & Comparison")
+    st.markdown("Track every training run, compare metrics, and see which model is active.")
+
+    if st.button("Refresh Registry", type="primary"):
+        try:
+            result = api_client._client().get("/model-registry").json() if hasattr(api_client, "_client") else None
+            # Fallback: load locally
+            from backend.model_registry import get_registry, compare_models, get_active_version
+            registry = get_registry()
+            comparison = compare_models()
+            active = get_active_version()
+
+            st.success(f"Active model: **{active}**")
+
+            if not comparison.empty:
+                st.subheader("Model Comparison Table")
+                st.dataframe(
+                    comparison.style.highlight_max(subset=["accuracy", "auc", "f1"], color="#1a3a1a")
+                               .highlight_min(subset=["accuracy", "auc", "f1"], color="#3a0a0a"),
+                    use_container_width=True
+                )
+
+                import plotly.express as px
+                fig = px.line(comparison, x="version", y=["accuracy", "auc", "f1"],
+                              title="Model Performance Across Versions",
+                              markers=True, template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
+
+                fig2 = px.bar(comparison, x="version", y="n_train",
+                              title="Training Dataset Size per Version",
+                              template="plotly_dark", color="auc",
+                              color_continuous_scale="Viridis")
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("No models trained yet. Go to Upload & Train to train your first model.")
+
+            if registry:
+                with st.expander("Full Registry JSON"):
+                    st.json(registry)
+
+        except Exception as e:
+            st.error(f"Error: {e}")
