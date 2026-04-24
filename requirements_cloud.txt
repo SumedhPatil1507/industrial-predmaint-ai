@@ -9,3 +9,4 @@ openpyxl>=3.1.2
 pyarrow>=16.1.0
 python-dotenv>=1.0.1
 statsmodels>=0.14.2
+matplotlib>=3.8.0

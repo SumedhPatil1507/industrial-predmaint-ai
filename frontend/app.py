@@ -482,10 +482,9 @@ elif page == "🔍 SHAP Explainability":
                     fig.update_layout(title="Top 5 Risk Drivers",
                                       template="plotly_dark", height=350)
                     st.plotly_chart(fig, use_container_width=True)
-                shap_df = pd.DataFrame(result["shap_values"][:20],
-                                       columns=result["feature_names"])
-                st.dataframe(shap_df.style.background_gradient(cmap="RdYlGn", axis=None),
-                             use_container_width=True)
+                shap_vals = result["shap_values"]
+                shap_df = pd.DataFrame(shap_vals[:20], columns=result["feature_names"])
+                st.dataframe(shap_df, use_container_width=True)
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -554,8 +553,7 @@ elif page == "❤️ Health Score":
         c1.metric("Avg Health", f"{fleet_df['health_score'].mean():.1f}/100")
         c2.metric("Critical Assets", int((fleet_df["health_score"]<50).sum()))
         c3.metric("Healthy Assets", int((fleet_df["health_score"]>=75).sum()))
-        st.dataframe(fleet_df.style.background_gradient(
-            subset=["health_score"], cmap="RdYlGn"), use_container_width=True)
+        st.dataframe(fleet_df, use_container_width=True)
         import plotly.express as px
         fig = px.bar(fleet_df, x="asset_tag", y="health_score", color="health_score",
             color_continuous_scale="RdYlGn", range_color=[0,100],
@@ -605,7 +603,7 @@ elif page == "⏱️ Time-to-Failure":
                             "This Week":"background-color:#5a3a0a",
                             "This Month":"background-color:#3a3a0a",
                             "Routine":"background-color:#0a3a0a"}.get(val,"")
-                st.dataframe(df_res.style.applymap(_cu, subset=["urgency"]),
+                st.dataframe(df_res.style.map(_cu, subset=["urgency"]),
                              use_container_width=True)
                 st.download_button("Download TTF Report",
                     df_res.to_csv(index=False), "ttf_report.csv","text/csv")
@@ -726,8 +724,7 @@ elif page == "🧪 What-If Simulator":
                 df_wi["risk"] = df_wi["probability"].apply(
                     lambda p: "CRITICAL" if p>=0.75 else "HIGH" if p>=0.5
                               else "MEDIUM" if p>=0.25 else "LOW")
-                st.dataframe(df_wi.style.background_gradient(
-                    subset=["probability"], cmap="RdYlGn_r"), use_container_width=True)
+                st.dataframe(df_wi, use_container_width=True)
 
                 safe_range = df_wi[df_wi["probability"] < 0.25]
                 if not safe_range.empty:
