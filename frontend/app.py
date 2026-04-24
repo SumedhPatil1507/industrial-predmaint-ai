@@ -56,7 +56,8 @@ from backend.health_score import compute_health_score, compute_fleet_health
 from backend.ttf_predictor import fleet_ttf
 from backend.downtime_calculator import calculate_downtime, MACHINE_DEFAULTS
 from backend.ml_engine import (train_model, predict_single, predict_batch,
-                                compute_shap, model_exists, FEATURE_COLS, TARGET)
+                                compute_shap, model_exists, model_is_compatible,
+                                delete_model_files, FEATURE_COLS, TARGET)
 from backend.file_parser import parse_upload, validate_columns
 from backend.model_registry import get_registry, compare_models, get_active_version
 from backend.iot_simulator import MACHINES
@@ -68,6 +69,11 @@ if "df" not in st.session_state or st.session_state.df is None:
 
 if "model_trained" not in st.session_state:
     st.session_state.model_trained = model_exists()
+
+# Force retrain if saved model has incompatible features (month/day_of_week)
+if model_exists() and not model_is_compatible():
+    delete_model_files()
+    st.session_state.model_trained = False
 
 if not st.session_state.model_trained:
     with st.spinner("Auto-training model on synthetic data..."):

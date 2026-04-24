@@ -191,13 +191,17 @@ def rolling_anomaly_chart(df: pd.DataFrame, col: str = "vibration_h_mms") -> go.
 # ── ML Charts ─────────────────────────────────────────────────────────────────
 
 def feature_importance_chart(importance: dict) -> go.Figure:
-    items = sorted(importance.items(), key=lambda x: x[1])
+    # Ensure all values are plain Python floats
+    clean = {k: float(v) if not isinstance(v, (int, float)) else v
+             for k, v in importance.items()}
+    items = sorted(clean.items(), key=lambda x: x[1])
     colors = [f"rgba(26,188,156,{0.4 + 0.6*i/max(len(items)-1,1)})" for i in range(len(items))]
-    fig = go.Figure(go.Bar(x=list(v for _, v in items),
-                           y=list(k for k, _ in items),
-                           orientation="h", marker_color=colors,
-                           text=[f"{v:.4f}" for _, v in items],
-                           textposition="outside"))
+    fig = go.Figure(go.Bar(
+        x=[v for _, v in items],
+        y=[k for k, _ in items],
+        orientation="h", marker_color=colors,
+        text=[f"{v:.4f}" for _, v in items],
+        textposition="outside"))
     fig.update_layout(title="SHAP Feature Importance (Mean |SHAP|)", height=420,
                       xaxis_title="Mean |SHAP|", template=DARK)
     return fig

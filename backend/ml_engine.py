@@ -202,3 +202,25 @@ def compute_shap(df: pd.DataFrame, max_rows: int = 300) -> dict:
 
 def model_exists() -> bool:
     return (MODEL_DIR / "rf_model.pkl").exists()
+
+
+def model_is_compatible() -> bool:
+    """Returns False if saved model has date-derived features that break live prediction."""
+    try:
+        feat_cols = joblib.load(MODEL_DIR / "feature_cols.pkl")
+        bad = {"month", "day_of_week"}
+        return not any(c in bad for c in feat_cols)
+    except Exception:
+        return False
+
+
+def delete_model_files():
+    """Remove stale model artifacts so app retrains fresh."""
+    import os
+    for name in ["rf_model.pkl", "iso_model.pkl", "scaler.pkl", "feature_cols.pkl"]:
+        p = MODEL_DIR / name
+        try:
+            if p.exists():
+                os.remove(p)
+        except Exception:
+            pass
