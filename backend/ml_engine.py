@@ -121,8 +121,11 @@ def predict_single(row: dict) -> dict:
     rf, iso, scaler, feat_cols = load_artifacts()
     df_row = pd.DataFrame([row])
     df_row = engineer_features(df_row)
-    available = [c for c in feat_cols if c in df_row.columns]
-    X = df_row[available].fillna(0)
+    # Pad any missing columns with 0 so feature vector always matches model
+    for c in feat_cols:
+        if c not in df_row.columns:
+            df_row[c] = 0
+    X = df_row[feat_cols].fillna(0)
     prob = rf.predict_proba(X)[0][1]
     pred = int(prob >= 0.5)
     anomaly_score = float(-iso.decision_function(X)[0])
@@ -137,8 +140,10 @@ def predict_single(row: dict) -> dict:
 def predict_batch(df: pd.DataFrame) -> pd.DataFrame:
     rf, iso, scaler, feat_cols = load_artifacts()
     df = engineer_features(df)
-    available = [c for c in feat_cols if c in df.columns]
-    X = df[available].fillna(0)
+    for c in feat_cols:
+        if c not in df.columns:
+            df[c] = 0
+    X = df[feat_cols].fillna(0)
     probs = rf.predict_proba(X)[:, 1]
     preds = (probs >= 0.5).astype(int)
     anomaly_scores = -iso.decision_function(X)
@@ -162,22 +167,33 @@ def _risk_level(prob: float) -> str:
 
 # ── SHAP ─────────────────────────────────────────────────────────────────────
 
-def compute_shap(df: pd.DataFrame, max_rows: int = 500) -> dict:
+def compute_shap(df: pd.DataFrame, max_rows: int = 300) -> dict:
     rf, _, _, feat_cols = load_artifacts()
     df = engineer_features(df)
-    # Only keep columns the model was actually trained on
-    available = [c for c in feat_cols if c in df.columns]
-    X = df[available].fillna(0).head(max_rows)
+    # Pad missing columns so shape always matches model
+    for c in feat_cols:
+        if c not in df.columns:
+            df[c] = 0
+    X = df[feat_cols].fillna(0).head(max_rows)
     explainer = shap.TreeExplainer(rf)
     shap_vals = explainer.shap_values(X)
-    sv = shap_vals[1] if isinstance(shap_vals, list) else shap_vals
+
+    # Handle both old (list) and new (ndarray) SHAP output formats
+    if isinstance(shap_vals, list):
+        sv = np.array(shap_vals[1])          # class 1 for binary
+    elif isinstance(shap_vals, np.ndarray) and shap_vals.ndim == 3:
+        sv = shap_vals[:, :, 1]              # shape (samples, features, classes)
+    else:
+        sv = np.array(shap_vals)
+
     mean_abs = np.abs(sv).mean(axis=0)
-    importance = dict(zip(available, mean_abs.round(4).tolist()))
+    importance = {k: round(float(v), 4) for k, v in zip(feat_cols, mean_abs)}
+    # Convert to plain Python lists of floats (safe for JSON + st.dataframe)
+    shap_list = [[round(float(x), 4) for x in row] for row in sv]
     return {
         "feature_importance": importance,
-        "shap_values": sv.tolist(),
-        "feature_names": available,
-        "sample_data": X.values.tolist(),
+        "shap_values": shap_list,
+        "feature_names": feat_cols,
     }
 
 

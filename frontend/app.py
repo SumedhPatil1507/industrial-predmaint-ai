@@ -112,9 +112,20 @@ with st.sidebar:
         "🧪 What-If Simulator",
         "📈 Model Registry",
         "📁 Upload Custom Data",
+        "📚 References & Citations",
+        "ℹ️ About",
     ], label_visibility="collapsed")
     st.divider()
-    st.caption("v3.0 · Live Data Always On · No Upload Needed")
+    st.caption("v3.0 · Live Data Always On")
+    st.markdown("""
+<div style='font-size:0.7rem;color:#8b949e;line-height:1.6'>
+Built with<br>
+🐍 Python 3.12<br>
+⚡ Streamlit 1.35<br>
+🤖 scikit-learn 1.4<br>
+📊 Plotly 5.22<br>
+🔍 SHAP 0.45
+</div>""", unsafe_allow_html=True)
 
 
 # =============================================================================
@@ -838,3 +849,19 @@ elif page == "📁 Upload Custom Data":
                 if "breakdown_flag" in df_preview.columns else "N/A")
         except Exception:
             pass
+
+
+# =============================================================================
+# REFERENCES & CITATIONS
+# =============================================================================
+elif page == "📚 References & Citations":
+    from frontend.page_references import render as render_refs
+    render_refs()
+
+
+# =============================================================================
+# ABOUT
+# =============================================================================
+elif page == "ℹ️ About":
+    from frontend.page_about import render as render_about
+    render_about()
