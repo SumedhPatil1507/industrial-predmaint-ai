@@ -1,5 +1,4 @@
 .env
-models/
 data/
 __pycache__/
 *.pkl
@@ -10,3 +9,6 @@ dist/
 build/
 .venv/
 venv/
+models/*.pkl
+models/registry.json
+!models/.gitkeep

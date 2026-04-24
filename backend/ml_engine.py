@@ -41,10 +41,11 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_all_features(df: pd.DataFrame) -> list[str]:
+    """Only use stable sensor features — never date-derived columns.
+    This ensures the model works with live data that has no transaction_date."""
     base = FEATURE_COLS.copy()
     extra = ["temp_diff", "vibration_total", "power_per_load"]
-    optional = ["month", "day_of_week"]
-    cols = base + extra + [c for c in optional if c in df.columns]
+    cols = base + extra
     return [c for c in cols if c in df.columns]
 
 
@@ -187,8 +188,10 @@ def compute_shap(df: pd.DataFrame, max_rows: int = 300) -> dict:
         sv = np.array(shap_vals)
 
     mean_abs = np.abs(sv).mean(axis=0)
-    importance = {k: round(float(v), 4) for k, v in zip(feat_cols, mean_abs)}
-    # Convert to plain Python lists of floats (safe for JSON + st.dataframe)
+    # Ensure scalar floats — guard against any array leakage
+    importance = {}
+    for k, v in zip(feat_cols, mean_abs.flatten()):
+        importance[k] = round(float(v), 4)
     shap_list = [[round(float(x), 4) for x in row] for row in sv]
     return {
         "feature_importance": importance,
