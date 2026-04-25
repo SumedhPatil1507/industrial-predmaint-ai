@@ -1027,13 +1027,15 @@ elif page == "\U0001f4c9 Drift Detection":
 
                 if report.results:
                     df_r = pd.DataFrame([{
-                        "Feature": r.feature, "PSI": r.psi,
-                        "KS Stat": r.ks_stat, "KS p-value": r.ks_pvalue,
+                        "Feature": r.feature,
+                        "PSI": r.psi,
+                        "Mean Shift %": r.mean_shift_pct,
                         "Drift": "Yes" if r.drift_detected else "No",
                         "Severity": r.severity,
                         "Baseline Mean": r.baseline_mean,
                         "Current Mean": r.current_mean,
-                        "Mean Shift %": r.mean_shift_pct,
+                        "Baseline Std": r.baseline_std,
+                        "Current Std": r.current_std,
                     } for r in report.results])
 
                     st.dataframe(df_r, use_container_width=True)
