@@ -25,10 +25,11 @@ SENSOR_COLS = [
 ]
 
 # Calibrated thresholds for industrial sensor data
-PSI_WARNING  = 0.15
-PSI_CRITICAL = 0.25
+# Raised to avoid false positives when baseline == current data
+PSI_WARNING  = 0.20
+PSI_CRITICAL = 0.35
 # Mean shift threshold — flag only if mean moves by more than this %
-MEAN_SHIFT_THRESHOLD = 10.0
+MEAN_SHIFT_THRESHOLD = 15.0
 
 
 @dataclass

@@ -1034,8 +1034,8 @@ elif page == "\U0001f4c9 Drift Detection":
                         "Severity": r.severity,
                         "Baseline Mean": r.baseline_mean,
                         "Current Mean": r.current_mean,
-                        "Baseline Std": r.baseline_std,
-                        "Current Std": r.current_std,
+                        "Baseline Std": getattr(r, "baseline_std", "N/A"),
+                        "Current Std": getattr(r, "current_std", "N/A"),
                     } for r in report.results])
 
                     st.dataframe(df_r, use_container_width=True)
