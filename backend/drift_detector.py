@@ -86,7 +86,14 @@ def detect_drift(current_df: pd.DataFrame) -> FleetDriftReport:
 
     baseline = load_baseline()
     if not baseline:
-        return FleetDriftReport(recommendation="No baseline found. Train model first.")
+        # Try to auto-save from the dataframe passed in
+        try:
+            save_baseline(current_df)
+            baseline = load_baseline()
+        except Exception:
+            pass
+    if not baseline:
+        return FleetDriftReport(recommendation="Baseline auto-saved. Run analysis again.")
 
     results = []
     for col in SENSOR_COLS:

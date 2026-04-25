@@ -103,6 +103,15 @@ def train_model(df: pd.DataFrame) -> dict:
     )
     metrics["version"] = version
     logger.info(f"Model trained. AUC={auc:.4f} version={version}")
+
+    # Auto-save baseline for drift detection
+    try:
+        from backend.drift_detector import save_baseline
+        save_baseline(df)
+        logger.info("Drift detection baseline saved.")
+    except Exception as e:
+        logger.warning(f"Baseline save failed (non-critical): {e}")
+
     return metrics
 
 

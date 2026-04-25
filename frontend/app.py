@@ -84,6 +84,15 @@ if not st.session_state.model_trained:
         except Exception as e:
             st.warning(f"Auto-train failed: {e}")
 
+# Auto-save drift baseline if missing
+try:
+    from backend.drift_detector import load_baseline, save_baseline
+    from pathlib import Path
+    if not Path("models/baseline_stats.pkl").exists() and st.session_state.df is not None:
+        save_baseline(st.session_state.df)
+except Exception:
+    pass
+
 model_ok = st.session_state.model_trained
 
 # ── Live data state ───────────────────────────────────────────────────────────
@@ -985,7 +994,14 @@ elif page == "\U0001f4c9 Drift Detection":
                 st.error(f"Error: {e}")
     with col2:
         baseline = load_baseline()
-        st.markdown(f"**Baseline:** {'OK' if baseline else 'Not set'}")
+        # Auto-save baseline if missing
+        if not baseline and st.session_state.df is not None:
+            try:
+                save_baseline(st.session_state.df)
+                baseline = load_baseline()
+            except Exception:
+                pass
+        st.markdown(f"**Baseline:** {'✅ Ready' if baseline else '⚠️ Not set'}")
 
     st.info("PSI < 0.1 = Stable | 0.1-0.2 = Warning | > 0.2 = Critical drift")
 
