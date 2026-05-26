@@ -1,6 +1,7 @@
 """
 Data Engine – generates live synthetic data in-memory.
-No file upload needed. Works on Streamlit Cloud.
+Applies sensor validation before returning readings.
+Works on Streamlit Cloud (no backend server needed).
 """
 import numpy as np
 import pandas as pd
@@ -9,7 +10,8 @@ from datetime import datetime, timedelta
 from collections import deque
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.iot_simulator import MACHINES, RANGES
+from backend.iot_simulator import MACHINES, RANGES, StressTestHarness, StressMode
+from backend.sensor_validator import validate_reading
 
 # ── Synthetic historical dataset (generated once per session) ─────────────────
 
@@ -85,50 +87,28 @@ def generate_historical_data(n_days: int = 365) -> pd.DataFrame:
 
 # ── Live tick generator ───────────────────────────────────────────────────────
 
-_sim_state = {m["asset_tag"]: {"degradation": 0.0, "tick": 0} for m in MACHINES}
+_harness = StressTestHarness(mode=StressMode.DEGRADING)
+_prev_readings: dict = {}
 
 
 def generate_live_tick() -> list[dict]:
-    """Generate one tick of live sensor readings for all machines."""
-    readings = []
-    for machine in MACHINES:
-        tag   = machine["asset_tag"]
-        mtype = machine["machine_type"]
-        r     = RANGES[mtype]
-        s     = _sim_state[tag]
-        s["tick"] += 1
-        if random.random() < 0.003:
-            s["degradation"] = 0.0
-        s["degradation"] = min(1.0, s["degradation"] + random.uniform(0, 0.006))
-        deg = s["degradation"]
-
-        def noisy(lo, hi, bias=0.0):
-            return round(random.uniform(lo, hi) +
-                         random.gauss(0, (hi-lo)*0.05) + bias*(hi-lo), 2)
-
-        tb  = noisy(*r["tb"],  bias=deg*0.4)
-        tm  = noisy(*r["tm"],  bias=deg*0.5)
-        vh  = max(0, noisy(*r["vh"], bias=deg*0.6))
-        vv  = max(0, noisy(*r["vv"], bias=deg*0.5))
-        op  = max(0, noisy(*r["op"], bias=-deg*0.3))
-        lp  = max(0, min(100, noisy(*r["lp"])))
-        rpm = max(0, noisy(*r["rpm"], bias=-deg*0.1))
-        pw  = max(0, noisy(*r["pw"],  bias=deg*0.2))
-
-        if random.random() < 0.01*(1+deg*3):
-            vh *= random.uniform(1.5, 2.5)
-            tb *= random.uniform(1.1, 1.3)
-
-        readings.append({
-            "timestamp": datetime.utcnow().isoformat(),
-            "asset_tag": tag, "machine_type": mtype,
-            "temp_bearing_degC": round(tb,2), "temp_motor_degC": round(tm,2),
-            "vibration_h_mms": round(vh,2),   "vibration_v_mms": round(vv,2),
-            "oil_pressure_bar": round(op,2),   "load_pct": round(lp,1),
-            "shaft_rpm": round(rpm,0),         "power_consumption_kw": round(pw,2),
-            "degradation_index": round(deg,3),
-        })
-    return readings
+    """
+    Generate one validated tick of live sensor readings for all machines.
+    Applies physics-based cross-sensor validation.
+    Returns readings with validation_status, malfunction, malfunction_message fields.
+    """
+    raw_readings = _harness.generate_all()
+    validated = []
+    for r in raw_readings:
+        tag = r["asset_tag"]
+        result = validate_reading(r, _prev_readings.get(tag))
+        r["validation_status"] = "OK" if result.is_valid else "MALFUNCTION"
+        r["malfunction"] = result.malfunction
+        r["malfunction_message"] = result.message if result.malfunction else ""
+        if result.is_valid:
+            _prev_readings[tag] = r
+        validated.append(r)
+    return validated
 
 
 # ── What-if simulator ─────────────────────────────────────────────────────────

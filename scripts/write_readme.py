@@ -1,4 +1,5 @@
-# industrial-predmaint-ai
+"""Write updated README.md"""
+readme = """# industrial-predmaint-ai
 
 **Live Demo:** https://industrial-predmaint-ai-d3sdstpce4nxkhghcq8zpk.streamlit.app
 
@@ -203,3 +204,8 @@ Full citations in the app References page.
 ## License
 
 MIT License.
+"""
+
+with open("README.md", "w", encoding="utf-8") as f:
+    f.write(readme)
+print(f"README written: {len(readme.splitlines())} lines")

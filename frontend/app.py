@@ -189,7 +189,11 @@ if page == "🏠 Dashboard":
         st.subheader("Live Fleet Status")
         fleet_rows = []
         for r in live_readings:
-            if model_ok:
+            for k, v in r.items():
+                if isinstance(v, (int, float)):
+                    st.session_state.live_hist[r["asset_tag"]][k].append(v)
+            # Only run ML on valid readings
+            if model_ok and not r.get("malfunction"):
                 try:
                     pred = predict_single(r)
                     hs   = compute_health_score(r)
@@ -201,6 +205,7 @@ if page == "🏠 Dashboard":
                         "Breakdown Prob": f"{pred['probability']:.1%}",
                         "Risk": risk,
                         "Degradation": f"{r['degradation_index']:.1%}",
+                        "Sensor Status": "OK",
                     })
                     if risk in ("CRITICAL","HIGH"):
                         alert = f"{datetime.now().strftime('%H:%M:%S')} | {r['asset_tag']} | {risk} | {pred['probability']:.1%}"
@@ -209,6 +214,16 @@ if page == "🏠 Dashboard":
                             st.session_state.alert_log = st.session_state.alert_log[:20]
                 except Exception:
                     pass
+            elif r.get("malfunction"):
+                fleet_rows.append({
+                    "Asset": r["asset_tag"],
+                    "Machine": r["machine_type"],
+                    "Health": "N/A",
+                    "Breakdown Prob": "N/A",
+                    "Risk": "SENSOR_MALFUNCTION",
+                    "Degradation": "N/A",
+                    "Sensor Status": r.get("malfunction_message", "Sensor fault"),
+                })
         if fleet_rows:
             st.dataframe(pd.DataFrame(fleet_rows), use_container_width=True, height=280)
 
@@ -248,8 +263,15 @@ elif page == "🔴 Live Fleet Monitor":
     snap = next((r for r in live_readings if r["asset_tag"] == selected), {})
     hist = {k: list(v) for k, v in st.session_state.live_hist[selected].items()}
 
+    # Show sensor malfunction banner if detected
+    if snap.get("malfunction"):
+        st.markdown(
+            f'<div class="ac">SENSOR MALFUNCTION / DATA DROP — {snap.get("malfunction_message","")}<br>'
+            f'Prediction suppressed. This is NOT a machine breakdown warning.</div>',
+            unsafe_allow_html=True)
+
     pred = {}
-    if model_ok and snap:
+    if model_ok and snap and not snap.get("malfunction"):
         try:
             pred = predict_single(snap)
             st.session_state.live_pred_hist[selected].append(
@@ -543,49 +565,64 @@ elif page == "❤️ Health Score":
         snap = next((r for r in live_readings if r["asset_tag"] == live_asset), {})
 
         if snap:
-            hs = compute_health_score(snap)
-            color = "#2ecc71" if hs.health_score>=75 else "#f39c12" if hs.health_score>=50 else "#e74c3c"
-            c1,c2,c3 = st.columns(3)
-            c1.metric("Health Score", f"{hs.health_score:.0f}/100")
-            c2.metric("Status", hs.status)
-            c3.metric("Degradation", f"{snap.get('degradation_index',0):.1%}")
+            if snap.get("malfunction"):
+                st.markdown(
+                    f'<div class="ac">SENSOR MALFUNCTION / DATA DROP<br>'
+                    f'{snap.get("malfunction_message","")}<br>'
+                    f'Health score suppressed — not a machine breakdown.</div>',
+                    unsafe_allow_html=True)
+            else:
+                hs = compute_health_score(snap)
+                color = "#2ecc71" if hs.health_score>=75 else "#f39c12" if hs.health_score>=50 else "#e74c3c"
+                c1,c2,c3 = st.columns(3)
+                c1.metric("Health Score", f"{hs.health_score:.0f}/100")
+                c2.metric("Status", hs.status)
+                c3.metric("Degradation", f"{snap.get('degradation_index',0):.1%}")
 
-            col_g, col_r = st.columns(2)
-            with col_g:
-                fig = go.Figure(go.Indicator(
-                    mode="gauge+number", value=hs.health_score,
-                    title={"text": f"Health – {live_asset}"},
-                    gauge={"axis":{"range":[0,100]}, "bar":{"color":color,"thickness":0.3},
-                           "steps":[{"range":[0,50],"color":"#3a0a0a"},
-                                    {"range":[50,75],"color":"#3a3a0a"},
-                                    {"range":[75,100],"color":"#0a3a0a"}],
-                           "threshold":{"line":{"color":"white","width":3},"value":75}}))
-                fig.update_layout(height=300, template="plotly_dark")
-                st.plotly_chart(fig, use_container_width=True)
-            with col_r:
-                comp = hs.component_scores
-                fig2 = go.Figure(go.Scatterpolar(
-                    r=list(comp.values()), theta=list(comp.keys()),
-                    fill="toself", line_color=color, fillcolor="rgba(46,204,113,0.15)"))
-                fig2.update_layout(polar=dict(radialaxis=dict(range=[0,100])),
-                    title="Component Radar", template="plotly_dark", height=350)
-                st.plotly_chart(fig2, use_container_width=True)
+                col_g, col_r = st.columns(2)
+                with col_g:
+                    fig = go.Figure(go.Indicator(
+                        mode="gauge+number", value=hs.health_score,
+                        title={"text": f"Health – {live_asset}"},
+                        gauge={"axis":{"range":[0,100]}, "bar":{"color":color,"thickness":0.3},
+                               "steps":[{"range":[0,50],"color":"#3a0a0a"},
+                                        {"range":[50,75],"color":"#3a3a0a"},
+                                        {"range":[75,100],"color":"#0a3a0a"}],
+                               "threshold":{"line":{"color":"white","width":3},"value":75}}))
+                    fig.update_layout(height=300, template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_r:
+                    comp = hs.component_scores
+                    fig2 = go.Figure(go.Scatterpolar(
+                        r=list(comp.values()), theta=list(comp.keys()),
+                        fill="toself", line_color=color, fillcolor="rgba(46,204,113,0.15)"))
+                    fig2.update_layout(polar=dict(radialaxis=dict(range=[0,100])),
+                        title="Component Radar", template="plotly_dark", height=350)
+                    st.plotly_chart(fig2, use_container_width=True)
 
-            st.subheader("Recommendations")
-            for rec in hs.recommendations:
-                st.markdown(f"- {rec}")
+                st.subheader("Recommendations")
+                for rec in hs.recommendations:
+                    st.markdown(f"- {rec}")
 
     with tab2:
         live_readings = generate_live_tick()
         fleet_rows = []
         for r in live_readings:
-            hs = compute_health_score(r)
-            fleet_rows.append({
-                "asset_tag": r["asset_tag"],
-                "machine_type": r["machine_type"],
-                "health_score": hs.health_score,
-                "status": hs.status,
-            })
+            if r.get("malfunction"):
+                fleet_rows.append({
+                    "asset_tag": r["asset_tag"],
+                    "machine_type": r["machine_type"],
+                    "health_score": 0,
+                    "status": "SENSOR_MALFUNCTION",
+                })
+            else:
+                hs = compute_health_score(r)
+                fleet_rows.append({
+                    "asset_tag": r["asset_tag"],
+                    "machine_type": r["machine_type"],
+                    "health_score": hs.health_score,
+                    "status": hs.status,
+                })
         fleet_df = pd.DataFrame(fleet_rows)
         c1,c2,c3 = st.columns(3)
         c1.metric("Avg Health", f"{fleet_df['health_score'].mean():.1f}/100")
