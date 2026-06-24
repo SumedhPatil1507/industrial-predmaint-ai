@@ -187,6 +187,39 @@ pytest tests/ -v
 | Deploy | Streamlit Cloud, Docker |
 | Python | 3.11 |
 
+## Edge‑Gateway Architecture
+
+The system now follows a **Local Edge‑Gateway‑First** design. All sensor ingestion, OPC‑UA write‑back, and database operations run on‑premises behind the factory firewall. TimescaleDB provides a high‑performance time‑series store on the edge node.
+
+### OT Write‑Back Service (`backend/ot_writeback.py`)
+
+- Exposes `async trigger_emergency_stop(asset_id: str, reason: str)`.
+- Maintains a pooled OPC‑UA client connection to the PLC endpoint.
+- Sends a 1‑second heartbeat to verify connectivity.
+- Performs exponential‑backoff retries on network failures.
+- Logs critical failures with `logging.critical`.
+
+### Ingestion Worker (`backend/ingestion_worker.py`)
+
+- Subscribes to the local Mosquitto broker on `factory/sensors/#`.
+- Parses incoming JSON payloads and validates them via `sensor_validator.py`.
+- Writes validated readings in batches to TimescaleDB using the `timescaledb` helper functions.
+- Gracefully pauses MQTT consumption if the DB connection is lost, preserving message offsets.
+
+## Database Migrations (`backend/migrations.sql`)
+
+- Creates `predictions`, `audit_logs`, and `alerts` tables with `asset_id` and indexed `timestamp`.
+- Converts `predictions` and `audit_logs` to TimescaleDB hypertables.
+- Adds a retention policy that compresses data older than **7 days** to conserve edge‑gateway storage.
+
+## Updating the Repository
+
+```bash
+git add backend/ot_writeback.py backend/ingestion_worker.py backend/migrations.sql README.md
+git commit -m "Add OT write‑back service, MQTT ingestion worker, and database migrations for edge‑gateway architecture"
+git push origin main
+```
+
 ---
 
 ## References
