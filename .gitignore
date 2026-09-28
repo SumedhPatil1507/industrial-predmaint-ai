@@ -11,4 +11,6 @@ build/
 venv/
 models/*.pkl
 models/registry.json
+models/vector_store/
 !models/.gitkeep
+

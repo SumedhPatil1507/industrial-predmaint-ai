@@ -50,6 +50,8 @@ from frontend.charts import (
     live_prediction_timeline, downtime_cost_chart, roi_waterfall,
     multi_machine_cost_comparison, model_comparison_chart,
     fleet_health_treemap, ttf_gantt,
+    copilot_shap_waterfall_chart, copilot_confidence_gauge,
+    copilot_radar_chart, copilot_retrieval_similarity_chart,
 )
 from frontend.data_engine import generate_historical_data, generate_live_tick, what_if_sensitivity
 from backend.health_score import compute_health_score, compute_fleet_health
@@ -61,6 +63,11 @@ from backend.ml_engine import (train_model, predict_single, predict_batch,
 from backend.file_parser import parse_upload, validate_columns
 from backend.model_registry import get_registry, compare_models, get_active_version
 from backend.iot_simulator import MACHINES
+from backend.copilot import (
+    run_maintenance_copilot, get_rag_indexer,
+    get_all_manuals, get_manuals_for_machine,
+    WORK_ORDERS_HISTORY, NOVELTY_SIMILARITY_THRESHOLD
+)
 
 # ── Auto-bootstrap: generate data + train model on first load ─────────────────
 if "df" not in st.session_state or st.session_state.df is None:
@@ -124,9 +131,10 @@ with st.sidebar:
     st.divider()
     page = st.radio("", [
         "🏠 Dashboard",
+        "🤖 Maintenance Copilot",
         "🔴 Live Fleet Monitor",
         "📊 EDA Explorer",
-        "🤖 Predict Breakdown",
+        "🔮 Predict Breakdown",
         "🔍 SHAP Explainability",
         "❤️ Health Score",
         "⏱️ Time-to-Failure",
@@ -241,6 +249,355 @@ if page == "🏠 Dashboard":
             "Upload your own CSV in **Upload Custom Data**.")
     time.sleep(2)
     st.rerun()
+
+
+# =============================================================================
+# MAINTENANCE COPILOT (LANGGRAPH + RAG + SHAP)
+# =============================================================================
+elif page == "🤖 Maintenance Copilot":
+    st.markdown("## 🤖 Autonomous Maintenance Copilot")
+    st.markdown(
+        "**LangGraph Agentic Architecture · Equipment Manuals Vector RAG · SHAP Local Attribution · "
+        "Confidence-Gated Escalation · Autonomous Industrial Work Orders**"
+    )
+    st.divider()
+
+    copilot_tab1, copilot_tab2, copilot_tab3 = st.tabs([
+        "🚀 Live Copilot Triage & Work Order",
+        "📚 Equipment SOPs & Vector RAG Explorer",
+        "📋 Generated Work Orders Ledger",
+    ])
+
+    with copilot_tab1:
+        st.markdown("### 🔍 Telemetry & Anomaly Trigger Configuration")
+        
+        # Anomaly Presets
+        presets = {
+            "🔥 CNC Spindle Bearing Overheat & High Vibration (Asset: CNC-001)": {
+                "asset_tag": "CNC-001", "machine_type": "CNC Lathe",
+                "temp_bearing_degC": 88.5, "temp_motor_degC": 78.0,
+                "vibration_h_mms": 7.2, "vibration_v_mms": 3.5,
+                "oil_pressure_bar": 5.2, "load_pct": 82.0,
+                "shaft_rpm": 1800.0, "power_consumption_kw": 34.0,
+            },
+            "⚠️ Hydraulic Cylinder Pressure Collapse & Cavitation (Asset: HYD-001)": {
+                "asset_tag": "HYD-001", "machine_type": "Hydraulic Press",
+                "temp_bearing_degC": 68.0, "temp_motor_degC": 75.0,
+                "vibration_h_mms": 5.8, "vibration_v_mms": 4.2,
+                "oil_pressure_bar": 1.8, "load_pct": 92.0,
+                "shaft_rpm": 1200.0, "power_consumption_kw": 42.0,
+            },
+            "⚡ Milling Machine Axis Overcurrent & Backlash (Asset: MIL-001)": {
+                "asset_tag": "MIL-001", "machine_type": "Milling Machine",
+                "temp_bearing_degC": 76.0, "temp_motor_degC": 88.0,
+                "vibration_h_mms": 6.1, "vibration_v_mms": 5.4,
+                "oil_pressure_bar": 4.8, "load_pct": 89.0,
+                "shaft_rpm": 1500.0, "power_consumption_kw": 45.0,
+            },
+            "💨 Industrial Boiler Feedwater Cavitation & Thermal Surge (Asset: BLR-001)": {
+                "asset_tag": "BLR-001", "machine_type": "Industrial Boiler",
+                "temp_bearing_degC": 94.0, "temp_motor_degC": 98.0,
+                "vibration_h_mms": 3.8, "vibration_v_mms": 7.5,
+                "oil_pressure_bar": 5.0, "load_pct": 95.0,
+                "shaft_rpm": 2900.0, "power_consumption_kw": 65.0,
+            },
+            "🌪️ Centrifugal Pump Mechanical Seal & Resonant Unbalance (Asset: PMP-001)": {
+                "asset_tag": "PMP-001", "machine_type": "Centrifugal Pump",
+                "temp_bearing_degC": 86.0, "temp_motor_degC": 82.0,
+                "vibration_h_mms": 7.8, "vibration_v_mms": 6.9,
+                "oil_pressure_bar": 3.2, "load_pct": 88.0,
+                "shaft_rpm": 1750.0, "power_consumption_kw": 38.0,
+            },
+            "🚨 NOVEL ANOMALY: Unprecedented Low-Speed Ultra-High Vibration Dynamic Spike (Asset: CNC-002 - NOVEL)": {
+                "asset_tag": "CNC-002", "machine_type": "CNC Lathe",
+                "temp_bearing_degC": 104.0, "temp_motor_degC": 52.0,
+                "vibration_h_mms": 14.5, "vibration_v_mms": 12.8,
+                "oil_pressure_bar": 8.9, "load_pct": 30.0,
+                "shaft_rpm": 350.0, "power_consumption_kw": 58.0,
+            },
+            "Custom Telemetry (Use Controls Below)": None,
+        }
+
+        selected_preset = st.selectbox(
+            "Select Telemetry Preset or Load Live Asset:",
+            list(presets.keys()),
+            index=0
+        )
+
+        preset_data = presets.get(selected_preset)
+        
+        # If user selected a preset, use its values
+        default_asset = preset_data["asset_tag"] if preset_data else "CNC-001"
+        default_mtype = preset_data["machine_type"] if preset_data else "CNC Lathe"
+        default_tb = preset_data["temp_bearing_degC"] if preset_data else 85.0
+        default_tm = preset_data["temp_motor_degC"] if preset_data else 80.0
+        default_vh = preset_data["vibration_h_mms"] if preset_data else 6.5
+        default_vv = preset_data["vibration_v_mms"] if preset_data else 4.0
+        default_op = preset_data["oil_pressure_bar"] if preset_data else 4.5
+        default_lp = preset_data["load_pct"] if preset_data else 80.0
+        default_rpm = preset_data["shaft_rpm"] if preset_data else 1500.0
+        default_kw = preset_data["power_consumption_kw"] if preset_data else 30.0
+
+        with st.expander("🛠️ Fine-Tune Sensor Telemetry Controls", expanded=False):
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                asset_tag = st.text_input("Asset Tag", value=default_asset)
+                machine_type = st.selectbox(
+                    "Machine Type",
+                    ["CNC Lathe", "Hydraulic Press", "Milling Machine", "Industrial Boiler", "Centrifugal Pump"],
+                    index=["CNC Lathe", "Hydraulic Press", "Milling Machine", "Industrial Boiler", "Centrifugal Pump"].index(default_mtype)
+                    if default_mtype in ["CNC Lathe", "Hydraulic Press", "Milling Machine", "Industrial Boiler", "Centrifugal Pump"] else 0
+                )
+            with col_m2:
+                trigger_cause = st.selectbox(
+                    "Anomaly Trigger Origin",
+                    ["/ws/scored-stream Live Anomaly", "Health Score Drop (< 70)", "SHAP Feature Outlier", "Manual Floor Inspection"]
+                )
+
+            st.markdown("#### Sensor Telemetry Values")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                temp_bearing = st.number_input("Bearing Temp (°C)", value=float(default_tb), step=0.5)
+                temp_motor = st.number_input("Motor Temp (°C)", value=float(default_tm), step=0.5)
+            with c2:
+                vib_h = st.number_input("Horizontal Vib (mm/s)", value=float(default_vh), step=0.1)
+                vib_v = st.number_input("Vertical Vib (mm/s)", value=float(default_vv), step=0.1)
+            with c3:
+                oil_pres = st.number_input("Oil Pressure (bar)", value=float(default_op), step=0.1)
+                load_pct = st.number_input("Load (%)", value=float(default_lp), step=1.0)
+            with c4:
+                shaft_rpm = st.number_input("Shaft Speed (RPM)", value=float(default_rpm), step=50.0)
+                power_kw = st.number_input("Power Draw (kW)", value=float(default_kw), step=1.0)
+        
+        # Telemetry payload
+        active_telemetry = {
+            "asset_tag": default_asset if selected_preset != "Custom Telemetry (Use Controls Below)" else asset_tag,
+            "machine_type": default_mtype if selected_preset != "Custom Telemetry (Use Controls Below)" else machine_type,
+            "temp_bearing_degC": default_tb if selected_preset != "Custom Telemetry (Use Controls Below)" else temp_bearing,
+            "temp_motor_degC": default_tm if selected_preset != "Custom Telemetry (Use Controls Below)" else temp_motor,
+            "vibration_h_mms": default_vh if selected_preset != "Custom Telemetry (Use Controls Below)" else vib_h,
+            "vibration_v_mms": default_vv if selected_preset != "Custom Telemetry (Use Controls Below)" else vib_v,
+            "oil_pressure_bar": default_op if selected_preset != "Custom Telemetry (Use Controls Below)" else oil_pres,
+            "load_pct": default_lp if selected_preset != "Custom Telemetry (Use Controls Below)" else load_pct,
+            "shaft_rpm": default_rpm if selected_preset != "Custom Telemetry (Use Controls Below)" else shaft_rpm,
+            "power_consumption_kw": default_kw if selected_preset != "Custom Telemetry (Use Controls Below)" else power_kw,
+        }
+
+        col_btn1, col_btn2 = st.columns([2, 3])
+        with col_btn1:
+            run_triage = st.button("⚡ Execute LangGraph Maintenance Copilot", type="primary", use_container_width=True)
+        with col_btn2:
+            st.caption("Runs full 6-node LangGraph agent: Intake ➔ SHAP ➔ Vector RAG ➔ Novelty Gating ➔ Work Order ➔ Dispatch")
+
+        # Execute Copilot
+        if run_triage or "copilot_last_result" not in st.session_state:
+            with st.spinner("Executing LangGraph Maintenance Copilot Agent..."):
+                copilot_result = run_maintenance_copilot(active_telemetry, trigger_source="streamlit_copilot_ui")
+                st.session_state["copilot_last_result"] = copilot_result
+        else:
+            copilot_result = st.session_state.get("copilot_last_result")
+
+        if copilot_result:
+            st.divider()
+            st.markdown("### 🕸️ LangGraph Agent Execution Trace")
+
+            # Visual Flow of LangGraph Nodes
+            traces = copilot_result.get("graph_trace", [])
+            cols_trace = st.columns(6)
+            node_labels = [
+                "1. Intake & Health",
+                "2. SHAP Drivers",
+                "3. Vector RAG",
+                "4. Novelty Gate",
+                "5. Draft Work Order",
+                "6. Dispatch Route"
+            ]
+            
+            for idx, (col_tr, lbl) in enumerate(zip(cols_trace, node_labels)):
+                col_tr.markdown(
+                    f'<div style="background:linear-gradient(135deg,#161b22,#1f2937);border:1px solid #3b82f6;'
+                    f'border-radius:8px;padding:8px 6px;text-align:center;font-size:0.75rem;font-weight:600;color:#60a5fa;">'
+                    f'✅ {lbl}</div>',
+                    unsafe_allow_html=True
+                )
+
+            with st.expander("🔍 View Complete LangGraph Node Execution Log", expanded=False):
+                for t in traces:
+                    st.markdown(
+                        f"**Step {t.get('step')}: {t.get('node')}** `[{t.get('status')}]` — *{t.get('timestamp')}*\n"
+                        f"> {t.get('summary')}"
+                    )
+
+            st.divider()
+
+            # Confidence-Gated Escalation Banner
+            tier = copilot_result.get("escalation_tier", "LEVEL_1_STANDARD_SOP")
+            confidence = copilot_result.get("confidence_score", 0.85)
+            is_novel = copilot_result.get("is_novel_anomaly", False)
+            escalation_reason = copilot_result.get("escalation_reason", "")
+
+            if tier == "LEVEL_3_OEM_SPECIALIST" or is_novel:
+                st.markdown(
+                    f'<div class="ac" style="padding:16px 20px;margin-bottom:15px;">'
+                    f'<h3 style="margin:0 0 8px 0;color:#ff6b6b;">🚨 LEVEL 3 EMERGENCY ESCALATION — NOVEL ANOMALY DETECTED</h3>'
+                    f'<b>Confidence Score:</b> {confidence:.0%} (Below Novelty Threshold {NOVELTY_SIMILARITY_THRESHOLD*100:.0f}%)<br>'
+                    f'<b>Routing Directive:</b> {escalation_reason}<br>'
+                    f'<b>Automated Action:</b> Urgent notification dispatched to Senior Reliability Lead & OEM Field Engineer.'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            elif tier == "LEVEL_2_SENIOR_TECH":
+                st.markdown(
+                    f'<div class="aw" style="padding:16px 20px;margin-bottom:15px;">'
+                    f'<h3 style="margin:0 0 8px 0;color:#ffa94d;">⚠️ LEVEL 2 ESCALATION — SENIOR TECHNICIAN SUPERVISION MANDATED</h3>'
+                    f'<b>Confidence Score:</b> {confidence:.0%}<br>'
+                    f'<b>Routing Directive:</b> {escalation_reason}<br>'
+                    f'<b>Automated Action:</b> Dispatched to Level 2 Certified Maintenance Technician with vibration analysis kit.'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f'<div class="ao" style="padding:16px 20px;margin-bottom:15px;">'
+                    f'<h3 style="margin:0 0 8px 0;color:#69db7c;">✅ LEVEL 1 STANDARD SOP DISPATCH — HIGH CONFIDENCE MATCH</h3>'
+                    f'<b>Confidence Score:</b> {confidence:.0%} (Standard SOP verified against OEM manual)<br>'
+                    f'<b>Routing Directive:</b> {escalation_reason}<br>'
+                    f'<b>Automated Action:</b> Autonomous Work Order issued directly to Floor Technician.'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            # Interactive Plotly Visualizations (3 Columns)
+            col_p1, col_p2, col_p3 = st.columns([1.2, 1.2, 1.1])
+            
+            with col_p1:
+                st.plotly_chart(
+                    copilot_shap_waterfall_chart(copilot_result.get("shap_top_features", [])),
+                    use_container_width=True
+                )
+            with col_p2:
+                st.plotly_chart(
+                    copilot_retrieval_similarity_chart(
+                        copilot_result.get("retrieved_manuals", []),
+                        threshold=NOVELTY_SIMILARITY_THRESHOLD
+                    ),
+                    use_container_width=True
+                )
+                st.plotly_chart(
+                    copilot_confidence_gauge(confidence, is_novel=is_novel),
+                    use_container_width=True
+                )
+            with col_p3:
+                st.plotly_chart(
+                    copilot_radar_chart(active_telemetry, machine_type=active_telemetry.get("machine_type")),
+                    use_container_width=True
+                )
+
+            st.divider()
+
+            # Formatted Work Order Display
+            st.markdown("### 📋 Generated Industrial Maintenance Work Order")
+            wo_struct = copilot_result.get("work_order_structured", {})
+            wo_md = copilot_result.get("work_order_markdown", "")
+
+            wo_box = st.container()
+            with wo_box:
+                st.markdown(
+                    f'<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:24px;margin-bottom:20px;">',
+                    unsafe_allow_html=True
+                )
+                st.markdown(wo_md)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            # Export & Action Center
+            st.markdown("#### ⚡ Work Order Action & Dispatch Center")
+            btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
+            
+            with btn_c1:
+                st.download_button(
+                    "📥 Export Work Order (.md)",
+                    data=wo_md,
+                    file_name=f"{copilot_result.get('work_order_id', 'work_order')}.md",
+                    mime="text/markdown",
+                    use_container_width=True
+                )
+            with btn_c2:
+                st.download_button(
+                    "📥 Export JSON Schema (.json)",
+                    data=json.dumps(wo_struct, indent=2),
+                    file_name=f"{copilot_result.get('work_order_id', 'work_order')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+            with btn_c3:
+                if st.button("🚨 Dispatch Technician Alert", use_container_width=True):
+                    st.success(f"Dispatched SMS & Slack alert for {copilot_result.get('work_order_id')} to assigned on-call team!")
+            with btn_c4:
+                if st.button("🛑 OPC-UA Safety Writeback", use_container_width=True):
+                    st.warning(f"OPC-UA Emergency Safe-State Command sent to PLC node for {active_telemetry.get('asset_tag')}.")
+
+    with copilot_tab2:
+        st.markdown("### 📚 Industrial Equipment Manuals & Vector RAG Explorer")
+        st.markdown("Browse standard operating procedures, torque tolerances, and test semantic search queries across the vector store.")
+        
+        col_s1, col_s2 = st.columns([3, 1])
+        with col_s1:
+            rag_search_query = st.text_input(
+                "Test Semantic Vector Search across Equipment Manuals:",
+                value="spindle bearing overheating high horizontal vibration"
+            )
+        with col_s2:
+            rag_mtype_filter = st.selectbox(
+                "Filter Machine Type:",
+                ["All", "CNC Lathe", "Hydraulic Press", "Milling Machine", "Industrial Boiler", "Centrifugal Pump"]
+            )
+
+        if rag_search_query:
+            indexer = get_rag_indexer()
+            mtype_arg = "" if rag_mtype_filter == "All" else rag_mtype_filter
+            search_res = indexer.search_manuals(machine_type=mtype_arg, query=rag_search_query, top_k=3)
+            
+            st.markdown(f"**Top Cosine Similarity:** `{search_res['top_similarity']:.2%}` | **Novel Anomaly Flag:** `{'YES ⚠️' if search_res['is_novel_anomaly'] else 'NO (Covered in SOPs) ✅'}`")
+            st.plotly_chart(
+                copilot_retrieval_similarity_chart(search_res["retrieved_docs"], threshold=NOVELTY_SIMILARITY_THRESHOLD),
+                use_container_width=True
+            )
+
+        st.divider()
+        st.markdown("#### 📖 Indexed Equipment Manuals & Clearance Specs")
+        
+        all_manuals = get_all_manuals()
+        if rag_mtype_filter != "All":
+            all_manuals = [m for m in all_manuals if m["machine_type"] == rag_mtype_filter]
+
+        for m in all_manuals:
+            with st.expander(f"📘 [{m['manual_id']}] {m['machine_type']} — {m['title']} ({m['subsystem']})"):
+                st.markdown(f"**Subsystem:** `{m['subsystem']}` | **Estimated MTTR:** `{m['estimated_mttr_hours']} Hours`")
+                st.markdown(f"**Clearance & Torque Tolerances:** `{m['clearance_tolerances']}`")
+                st.markdown(f"**Known Symptoms:** {m['symptoms']}")
+                st.markdown(f"**Root Cause Analysis:** {m['root_cause_analysis']}")
+                st.markdown("**Standard Operating Procedure (SOP):**")
+                for step in m["sop_steps"]:
+                    st.markdown(f"- {step}")
+                st.markdown(f"**Safety & LOTO Protocol:** > {m['safety_protocol']}")
+                st.markdown(f"**Required Spare Parts:** {', '.join(m['required_parts'])}")
+
+    with copilot_tab3:
+        st.markdown("### 📋 Generated Work Orders Audit Ledger")
+        st.markdown("Real-time history of maintenance work orders generated by the LangGraph Copilot.")
+        
+        from backend.copilot import WORK_ORDERS_HISTORY
+        if WORK_ORDERS_HISTORY:
+            wo_df = pd.DataFrame(WORK_ORDERS_HISTORY)
+            display_cols = [c for c in ["work_order_id", "asset_tag", "machine_type", "priority", "health_score", "confidence_score_pct", "escalation_tier", "estimated_mttr_hours", "created_at"] if c in wo_df.columns]
+            st.dataframe(wo_df[display_cols], use_container_width=True)
+            
+            sel_wo_id = st.selectbox("Inspect Full Work Order from Ledger:", wo_df["work_order_id"].tolist())
+            matched_rec = next((item for item in WORK_ORDERS_HISTORY if item["work_order_id"] == sel_wo_id), None)
+            if matched_rec:
+                st.json(matched_rec)
+        else:
+            st.info("No work orders generated in this session yet. Run a triage in the first tab to populate the audit ledger.")
 
 
 # =============================================================================

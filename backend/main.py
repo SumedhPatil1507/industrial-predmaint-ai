@@ -6,7 +6,10 @@ Streamlit frontend is a pure display layer.
 import asyncio
 import json
 import logging
+import os
 from typing import Optional
+from backend.timescaledb import init_pool, close_pool, insert_audit_log, insert_prediction
+from backend.ot_writeback import OPCUAWriteBack
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +18,7 @@ import pandas as pd
 
 from backend import ml_engine, alerts, llm_advisor, file_parser, downtime_calculator
 from backend import health_score, ttf_predictor, model_registry
-from backend.database import insert_audit_log, insert_prediction
+# (Removed Supabase import; using TimescaleDB)
 from backend.sensor_validator import validate_reading
 from backend.ingestion import parse_mqtt_payload, parse_opcua_frame, ingest
 from backend.iot_simulator import StressTestHarness, StressMode, MACHINES
@@ -28,6 +31,14 @@ app = FastAPI(
     description="Industrial Machine Predictive Maintenance — High-Throughput Backend",
     version="2.0.0",
 )
+
+# Global write‑back handler (configured via env vars)
+_opcua_writeback = OPCUAWriteBack(
+    endpoint=os.getenv("OPCUA_ENDPOINT", "opc.tcp://localhost:4840"),
+    node_id=os.getenv("OPCUA_EMERGENCY_NODE", "ns=2;s=Emergency_Stop_Trigger"),
+    auth={"username": os.getenv("OPCUA_USER"), "password": os.getenv("OPCUA_PASSWORD")}
+)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -322,6 +333,68 @@ async def get_model_registry():
     }
 
 
+# ── Maintenance Copilot Endpoints ─────────────────────────────────────────────
+
+class CopilotQueryRequest(BaseModel):
+    machine_type: str = "CNC Lathe"
+    query: str
+    top_k: int = 3
+    min_threshold: Optional[float] = 0.52
+
+
+@app.post("/copilot/diagnose")
+async def copilot_diagnose(reading: SensorReadingIn):
+    """
+    Run the LangGraph Maintenance Copilot on sensor telemetry.
+    Computes SHAP, retrieves SOP manuals via RAG, evaluates novelty,
+    and drafts a confidence-gated work order.
+    """
+    from backend.copilot import run_maintenance_copilot
+    data = reading.model_dump()
+    result = run_maintenance_copilot(data, trigger_source="rest_api_diagnose")
+    await insert_audit_log(
+        "copilot_work_order_generated",
+        "machine",
+        data["asset_tag"],
+        {
+            "work_order_id": result.get("work_order_id"),
+            "confidence_score": result.get("confidence_score"),
+            "escalation_tier": result.get("escalation_tier"),
+            "is_novel": result.get("is_novel_anomaly"),
+        }
+    )
+    return result
+
+
+@app.post("/copilot/search-manuals")
+async def copilot_search_manuals(req: CopilotQueryRequest):
+    """Search indexed equipment manuals & SOPs using vector RAG retriever."""
+    from backend.copilot import get_rag_indexer
+    indexer = get_rag_indexer()
+    return indexer.search_manuals(
+        machine_type=req.machine_type,
+        query=req.query,
+        top_k=req.top_k,
+        min_threshold=req.min_threshold or 0.52,
+    )
+
+
+@app.get("/copilot/manuals")
+async def copilot_list_manuals(machine_type: Optional[str] = None):
+    """List available equipment SOP manuals."""
+    from backend.copilot import get_all_manuals, get_manuals_for_machine
+    if machine_type:
+        return get_manuals_for_machine(machine_type)
+    return get_all_manuals()
+
+
+@app.get("/copilot/work-orders")
+async def copilot_get_work_orders():
+    """Retrieve history of generated work orders."""
+    from backend.copilot import WORK_ORDERS_HISTORY
+    return {"work_orders": WORK_ORDERS_HISTORY}
+
+
 # ── WebSocket: Pre-calculated scores pushed from backend ─────────────────────
 
 @app.websocket("/ws/live-sensors")
@@ -341,67 +414,60 @@ async def scored_stream(websocket: WebSocket):
     """
     High-throughput WebSocket that pushes pre-calculated scores.
     Streamlit connects here — receives anomaly scores, health indices,
-    TTF estimates, and validation status. Zero ML in the frontend.
+    TTF estimates, and automatic Copilot triage when anomalies occur.
     """
     await websocket.accept()
     logger.info("WS /ws/scored-stream connected")
-    model_ready = ml_engine.model_exists()
 
     try:
+        from backend.iot_simulator import generate_all_machines_reading
+        from backend.health_score import compute_health_score
+        from backend.copilot import run_maintenance_copilot
+        import asyncio
+
         while True:
-            readings = _harness.generate_all()
-            scored = []
+            readings = generate_all_machines_reading()
+            scored_payload = []
 
             for r in readings:
-                tag = r["asset_tag"]
+                # Sensor validation
+                val = validate_reading(r, _prev_readings.get(r["asset_tag"]))
+                _prev_readings[r["asset_tag"]] = r
 
-                # Validate first
-                val = validate_reading(r, _prev_readings.get(tag))
-                r["validation_status"] = "OK" if val.is_valid else "MALFUNCTION"
-                r["malfunction"] = val.malfunction
-                r["malfunction_message"] = val.message if val.malfunction else ""
-
-                if val.malfunction:
-                    # Sensor malfunction — do NOT run ML prediction
-                    r["prediction"] = None
-                    r["probability"] = None
-                    r["risk_level"] = "SENSOR_MALFUNCTION"
-                    r["anomaly_score"] = None
-                    r["health_score"] = None
-                    r["health_status"] = "SENSOR_MALFUNCTION"
-                    r["ttf_days"] = None
-                    r["ttf_urgency"] = "UNKNOWN"
-                else:
-                    _prev_readings[tag] = r
-
-                    # ML prediction
-                    if model_ready:
-                        try:
-                            pred = ml_engine.predict_single(r)
-                            r.update(pred)
-                        except Exception:
-                            r["prediction"] = None
-                            r["probability"] = None
-                            r["risk_level"] = "UNKNOWN"
-                            r["anomaly_score"] = None
-
-                    # Health score
+                # ML Scoring
+                if ml_engine.model_exists() and not val.malfunction:
                     try:
-                        hs = health_score.compute_health_score(r)
-                        r["health_score"] = hs.health_score
-                        r["health_status"] = hs.status
-                        r["health_recommendations"] = hs.recommendations
-                    except Exception:
-                        r["health_score"] = None
-                        r["health_status"] = "UNKNOWN"
-                        r["health_recommendations"] = []
+                        pred_res = ml_engine.predict_single(r)
+                        r.update(pred_res)
+                    except Exception as e:
+                        logger.warning(f"Live scoring error: {e}")
 
-                scored.append(r)
+                # Health Score
+                hs = compute_health_score(r)
+                r["health_score"] = hs.health_score
+                r["health_status"] = hs.status
+                r["validation_status"] = "MALFUNCTION" if val.malfunction else "OK"
 
-            await websocket.send_text(json.dumps(scored))
+                # Check for anomaly / health score drop to trigger Copilot
+                if (r.get("health_score", 100) < 70 or r.get("risk_level") in ("HIGH", "CRITICAL")) and not val.malfunction:
+                    # Autonomous Copilot analysis
+                    try:
+                        copilot_res = run_maintenance_copilot(r, trigger_source="ws_scored_stream")
+                        r["copilot_triggered"] = True
+                        r["copilot_work_order"] = copilot_res.get("work_order_structured")
+                    except Exception as ce:
+                        logger.error(f"WS Copilot execution failed: {ce}")
+
+                scored_payload.append(r)
+
+            await websocket.send_text(json.dumps({
+                "timestamp": datetime.datetime.now().isoformat() if hasattr(datetime, "datetime") else str(pd.Timestamp.now()),
+                "data": scored_payload,
+            }))
             await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
         logger.info("WS /ws/scored-stream disconnected")
     except Exception as e:
         logger.error(f"WS /ws/scored-stream error: {e}")
+

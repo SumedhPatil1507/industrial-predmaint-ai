@@ -424,3 +424,174 @@ def ttf_gantt(results: list[dict]) -> go.Figure:
     fig.update_traces(texttemplate="%{text:.0f}d", textposition="outside")
     fig.update_layout(height=350, xaxis_title="Days to Failure")
     return fig
+
+
+# ── Maintenance Copilot Interactive Charts ────────────────────────────────────
+
+def copilot_shap_waterfall_chart(top_features: list[dict]) -> go.Figure:
+    """Horizontal bar chart showing positive/negative SHAP feature contributions for the anomaly."""
+    if not top_features:
+        return go.Figure()
+    
+    df = pd.DataFrame(top_features)
+    df["color"] = df["shap_impact"].apply(lambda x: "#e74c3c" if x > 0 else "#2ecc71")
+    df = df.iloc[::-1]  # reverse for top-down display
+
+    fig = go.Figure(go.Bar(
+        x=df["shap_impact"],
+        y=df["display_name"],
+        orientation="h",
+        marker_color=df["color"],
+        text=[f"{val:+.3f} (Val: {raw})" for val, raw in zip(df["shap_impact"], df["raw_value"])],
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>SHAP Contribution: %{x:+.4f}<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title="<b>SHAP Local Attribution: Drivers of Anomaly</b>",
+        xaxis_title="SHAP Impact (Positive = Drives Failure Risk)",
+        yaxis_title="Sensor Feature",
+        template=DARK,
+        height=320,
+        margin=dict(l=10, r=40, t=50, b=30),
+    )
+    return fig
+
+
+def copilot_confidence_gauge(confidence_score: float, is_novel: bool = False) -> go.Figure:
+    """Plotly gauge for RAG SOP match confidence and novel anomaly detection."""
+    conf_pct = confidence_score * 100
+    color = "#e74c3c" if is_novel or conf_pct < 55 else ("#f39c12" if conf_pct < 75 else "#2ecc71")
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number+delta",
+        value=conf_pct,
+        number={"suffix": "%", "font": {"size": 36, "color": color}},
+        title={"text": "<b>RAG SOP Match Confidence</b><br><span style='font-size:0.8em;color:#8b949e'>" + 
+               ("⚠️ NOVEL ANOMALY DETECTED" if is_novel else "STANDARD SOP COVERAGE") + "</span>", "font": {"size": 16}},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#8b949e"},
+            "bar": {"color": color, "thickness": 0.28},
+            "bgcolor": "#161b22",
+            "borderwidth": 1,
+            "bordercolor": "#30363d",
+            "steps": [
+                {"range": [0, 52], "color": "rgba(231, 76, 60, 0.25)"},
+                {"range": [52, 75], "color": "rgba(243, 156, 18, 0.25)"},
+                {"range": [75, 100], "color": "rgba(46, 204, 113, 0.25)"},
+            ],
+            "threshold": {
+                "line": {"color": "#ffffff", "width": 3},
+                "thickness": 0.8,
+                "value": 52,
+            },
+        }
+    ))
+
+    fig.update_layout(template=DARK, height=260, margin=dict(l=20, r=20, t=50, b=20))
+    return fig
+
+
+def copilot_radar_chart(telemetry: dict, machine_type: str = "CNC Lathe") -> go.Figure:
+    """Interactive radar/spider chart comparing current anomaly telemetry against nominal baseline."""
+    from backend.copilot.shap_explainer import NOMINAL_BASELINES, FEATURE_DISPLAY_NAMES
+    
+    categories = []
+    current_vals_norm = []
+    nominal_baseline_norm = []
+    raw_hover = []
+
+    for k, (low, high) in NOMINAL_BASELINES.items():
+        if k in telemetry:
+            val = float(telemetry.get(k, 0.0))
+            display = FEATURE_DISPLAY_NAMES.get(k, k).split(" ")[0]
+            categories.append(display)
+            
+            # Normalize to 0-100 scale based on nominal window
+            span = max(high - low, 1.0)
+            norm_val = max(0, min(150, ((val - low) / span) * 50 + 50))
+            current_vals_norm.append(norm_val)
+            nominal_baseline_norm.append(50)  # nominal reference line
+            raw_hover.append(f"{k}: {val:.2f} (Nominal: {low:.1f}-{high:.1f})")
+
+    if not categories:
+        return go.Figure()
+
+    # Close polygon loop
+    categories.append(categories[0])
+    current_vals_norm.append(current_vals_norm[0])
+    nominal_baseline_norm.append(nominal_baseline_norm[0])
+
+    fig = go.Figure()
+
+    # Nominal range trace
+    fig.add_trace(go.Scatterpolar(
+        r=nominal_baseline_norm,
+        theta=categories,
+        fill="toself",
+        fillcolor="rgba(46, 204, 113, 0.15)",
+        line=dict(color="#2ecc71", dash="dash", width=1.5),
+        name="Nominal Baseline",
+    ))
+
+    # Anomaly reading trace
+    fig.add_trace(go.Scatterpolar(
+        r=current_vals_norm,
+        theta=categories,
+        fill="toself",
+        fillcolor="rgba(231, 76, 60, 0.3)",
+        line=dict(color="#e74c3c", width=2.5),
+        name="Current Anomaly State",
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 150], showticklabels=False),
+            bgcolor="#161b22"
+        ),
+        title=f"<b>Telemetry Deviation Radar ({machine_type})</b>",
+        template=DARK,
+        height=320,
+        margin=dict(l=30, r=30, t=50, b=20),
+        showlegend=True,
+    )
+    return fig
+
+
+def copilot_retrieval_similarity_chart(retrieved_manuals: list[dict], threshold: float = 0.52) -> go.Figure:
+    """Bar chart showing RAG vector cosine similarity scores for retrieved SOP manuals."""
+    if not retrieved_manuals:
+        return go.Figure()
+
+    titles = [f"{d.get('manual_id')}: {d.get('title')[:30]}..." for d in retrieved_manuals]
+    sims = [d.get("similarity_score", 0.0) * 100 for d in retrieved_manuals]
+    colors = ["#2ecc71" if s >= threshold * 100 else "#e74c3c" for s in sims]
+
+    fig = go.Figure(go.Bar(
+        x=sims,
+        y=titles,
+        orientation="h",
+        marker_color=colors,
+        text=[f"{s:.1f}%" for s in sims],
+        textposition="outside",
+    ))
+
+    # Threshold line
+    fig.add_vline(
+        x=threshold * 100,
+        line_dash="dot",
+        line_color="#f39c12",
+        annotation_text=f"Novelty Threshold ({threshold * 100:.0f}%)",
+        annotation_position="top right"
+    )
+
+    fig.update_layout(
+        title="<b>Vector Store RAG Retrieval Match Scores</b>",
+        xaxis=dict(title="Similarity Score (%)", range=[0, 105]),
+        yaxis_title="Retrieved Equipment SOP",
+        template=DARK,
+        height=260,
+        margin=dict(l=10, r=30, t=50, b=30),
+    )
+    return fig
+

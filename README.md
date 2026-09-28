@@ -2,7 +2,7 @@
 
 **Live Demo:** https://industrial-predmaint-ai-d3sdstpce4nxkhghcq8zpk.streamlit.app
 
-End-to-end industrial machine predictive maintenance system. Predicts equipment failures before they occur using real-time sensor data, physics-based validation, and machine learning.
+End-to-end industrial machine predictive maintenance system featuring an **Agentic Maintenance Copilot** powered by **LangGraph**, **RAG Vector Search across Equipment Manuals/SOPs**, and **Local SHAP Explainability** with **Confidence-Gated Escalation**.
 
 ---
 
@@ -15,221 +15,171 @@ End-to-end industrial machine predictive maintenance system. Predicts equipment 
 | Payback period | 3-6 months |
 | Advance failure warning | 3-7 days |
 | Breakdown prediction accuracy | ~95% AUC-ROC |
+| Autonomous Work Order Dispatch | < 5 seconds upon anomaly detection |
 
 ---
 
-## Architecture
+## System Architecture
 
 ```
 +---------------------------+     +-----------------------------+
-|   Industrial Protocols    |     |   Hardware Stress-Testing   |
-|                           |     |   Harness (Simulator)       |
+|   Industrial Telemetry    |     |   Hardware Stress-Testing   |
+|   & Ingestion Layer       |     |   Harness (Simulator)       |
 |  MQTT  /ingest/mqtt       +---->+   StressTestHarness         |
 |  OPC-UA /ingest/opcua     |     |   Modes: NORMAL / DEGRADING |
 |  REST   /predict          |     |   SPIKE / MALFUNCTION /     |
-|  Batch  /upload-predict   |     |   FAILURE                   |
+|  WS /ws/scored-stream     |     |   FAILURE                   |
 +---------------------------+     +-----------------------------+
               |                                |
               v                                v
-+------------------------------------------+
-|   Sensor Validation Layer                |
-|   (backend/sensor_validator.py)          |
-|                                          |
-|   Pydantic type checks                   |
-|   Physical hard limits per machine       |
-|   Cross-sensor physics rules             |
-|   Rate-of-change impossibility check     |
-|                                          |
-|   SENSOR_MALFUNCTION -> suppresses ML    |
-|   Valid reading -> ML pipeline           |
-+------------------------------------------+
++---------------------------------------------------------------+
+|   Sensor Validation & Physics Consistency (backend/sensor_validator.py)
+|   Pydantic schema bounds, rate-of-change impossible spikes,
+|   cross-sensor thermodynamic verification.
++---------------------------------------------------------------+
               |
               v
-+------------------------------------------+
-|   ML Backend (FastAPI)                   |
-|   backend/main.py                        |
-|                                          |
-|   Random Forest breakdown prediction     |
-|   Isolation Forest anomaly detection     |
-|   Health Score (0-100 per asset)         |
-|   Time-to-Failure estimation             |
-|   SHAP explainability                    |
-|                                          |
-|   WS /ws/scored-stream                   |
-|   Pushes pre-calculated scores           |
-+------------------------------------------+
++---------------------------------------------------------------+
+|   ML Engine & Anomaly Detection (backend/ml_engine.py)        |
+|   Random Forest Classifier (~95% AUC), Isolation Forest       |
+|   Health Score (0-100), Time-to-Failure (TTF), SHAP Drivers   |
++---------------------------------------------------------------+
+              |
+              | Anomaly Emitted / Health Score < 70
+              v
++===============================================================+
+|   🤖 AUTONOMOUS MAINTENANCE COPILOT AGENT (LangGraph + RAG)   |
+|   backend/copilot/agent.py                                    |
+|                                                               |
+|   1. Intake Telemetry & Degradation Assessment                |
+|   2. Local SHAP Root-Cause Feature Attribution                |
+|   3. Equipment Manuals & SOPs Vector RAG Retrieval            |
+|   4. Confidence-Gated Novelty & Escalation Evaluator          |
+|   5. Natural Language Work Order Generator (BOM, LOTO, MTTR)  |
+|   6. Escalation Router & OT Write-Back Notification           |
++===============================================================+
               |
               v
-+------------------------------------------+
-|   Streamlit Frontend (display only)      |
-|   frontend/app.py                        |
-|                                          |
-|   Zero ML logic in frontend              |
-|   Receives scored data from backend      |
-|   18 interactive pages                   |
-|   100% Plotly charts                     |
-+------------------------------------------+
++---------------------------------------------------------------+
+|   Streamlit Frontend & Interactive Plotly Dashboards          |
+|   frontend/app.py · 100% interactive Plotly charts           |
+|   - 🤖 Maintenance Copilot Console (LangGraph trace & visualizer)
+|   - 🔴 Live Fleet Monitor · 📊 EDA Explorer                   |
+|   - 🔍 SHAP Waterfall Attribution · 📚 RAG SOP Explorer       |
+|   - ⏱️ TTF & Gantt · 💰 Downtime Calculator · 📋 Work Orders  |
++---------------------------------------------------------------+
 ```
 
 ---
 
-## Features
+## 🤖 Maintenance Copilot (LangGraph + RAG + SHAP)
 
-### Sensor Validation (New)
-- Pydantic models with physical boundary enforcement
-- Cross-sensor physics rules (e.g. Screw Compressor: temp surge must correlate with pressure rise)
-- Rate-of-change impossibility detection (50%+ change in one tick = sensor fault)
-- Returns SENSOR_MALFUNCTION instead of false breakdown warning
-- Suppresses ML prediction on invalid readings
+The Maintenance Copilot operates as an autonomous, stateful agent that bridges machine learning anomaly detection with industrial domain knowledge:
 
-### Industrial Protocol Ingestion (New)
-- MQTT payload normaliser (V1 compact schema + V2 verbose schema + direct fields)
-- OPC-UA NodeId/Value frame parser with StatusCode quality filtering
-- Unified ingestion router: `POST /ingest/mqtt`, `POST /ingest/opcua`
-- All ingestion paths run through validation before ML
+```mermaid
+graph TD
+    A[Telemetry / Anomaly Trigger] --> B[Node 1: Intake & Health Assessment]
+    B --> C[Node 2: SHAP Feature Attribution]
+    C --> D[Node 3: Vector Store RAG Retrieval]
+    D --> E[Node 4: Novelty & Confidence Gating]
+    E --> F[Node 5: Work Order Drafting]
+    F --> G[Node 6: Escalation & Dispatch Routing]
+```
 
-### Hardware Stress-Testing Harness (New)
-- Repositioned IoT simulator as explicit test harness
-- Modes: NORMAL, DEGRADING, SPIKE, MALFUNCTION, FAILURE
-- MALFUNCTION mode injects cross-sensor inconsistencies to test validator
-- Used for pipeline validation and load testing
+### 1. RAG-Indexed Equipment Manuals & SOPs
+Comprehensive standard operating procedures (SOPs), clearance tolerances, torque specifications, failure modes, and safety protocols are indexed per machine type:
+- **CNC Lathe**: Spindle bearing overheating, drive motor misalignment, hydraulic clamping pressure loss (`CNC-SOP-001`, `CNC-SOP-002`, `CNC-SOP-003`).
+- **Hydraulic Press**: Pressure collapse, pump cavitation, cylinder seal extrusion & platen skew (`HYD-SOP-001`, `HYD-SOP-002`).
+- **Milling Machine**: Spindle chatter, drawbar retention, ball screw backlash & linear guide lubrication (`MIL-SOP-001`, `MIL-SOP-002`).
+- **Industrial Boiler**: Feedwater pump cavitation, thermal imbalance, forced draft fan unbalance (`BLR-SOP-001`, `BLR-SOP-002`).
+- **Centrifugal Pump**: Impeller cavitation, mechanical seal failure, 2X RPM angular misalignment (`PMP-SOP-001`, `PMP-SOP-002`).
 
-### High-Throughput WebSocket
-- `WS /ws/scored-stream` pushes pre-calculated anomaly scores, health indices, TTF
-- Frontend is a pure display layer — zero ML computation in Streamlit
-- `WS /ws/live-sensors` retained for backward compatibility
+### 2. Confidence-Gated Escalation Matrix
+The agent evaluates RAG vector similarity and sensor consistency to determine whether an anomaly is standard or novel:
 
-### Machine Learning
-- Random Forest (~95% AUC-ROC) with class-balanced training
-- Isolation Forest anomaly detection on normal-state data
-- SHAP explainability for every prediction
-- Model Drift Detection (PSI + mean shift)
-- Model Registry with version comparison
+| Match Score / Condition | Escalation Tier | Action Protocol |
+|-------------------------|-----------------|-----------------|
+| **Similarity $\ge$ 75%** | **Level 1: Standard SOP** | Autonomous Work Order generated and dispatched directly to floor technician. |
+| **52% $\le$ Similarity < 75%** | **Level 2: Senior Tech** | Dispatches work order with mandatory Senior Reliability Technician supervision. |
+| **Similarity < 52% or Novel Anomaly** | **Level 3: OEM Specialist** | Flags **Novel Anomaly Signature**; alerts Reliability Lead and OEM Field Specialist. |
 
-### Business Tools
-- OEE Calculator (Availability x Performance x Quality)
-- Executive Summary with shift handover report
-- Maintenance Schedule Generator with work orders
-- Downtime Cost Calculator (INR/USD + ROI waterfall)
-- PDF Report Export per asset
-- What-If Simulator for sensor sensitivity analysis
-
-### Infrastructure
-- Self-contained on Streamlit Cloud (no backend needed)
-- FastAPI backend for local/production deployment
-- Docker + docker-compose
-- GitHub Actions CI/CD
-- Supabase audit logs (optional)
-- Slack + Email alerts
+### 3. Industrial Work Order Artifacts
+Every generated work order (`WO-YYYYMMDD-ASSET-XXX`) includes:
+- **Priority Tier**: `P1 - CRITICAL EMERGENCY` / `P2 - URGENT` / `P3 - PREVENTIVE`
+- **SHAP Local Attribution**: Ranking top 3-4 physical sensor root causes
+- **Cross-Referenced OEM Manual**: Subsystem specs, clearance tolerances, torque limits
+- **Step-by-Step Remediation SOP**: Precision mechanical procedures
+- **Safety Directive**: Lockout/Tagout (LOTO) protocols and PPE requirements
+- **BOM Parts List & Tooling**: Required replacement part numbers and estimated MTTR
 
 ---
 
-## Dataset
+## REST & WebSocket API Endpoints
 
-Synthetic dataset inspired by NASA C-MAPSS, UCI AI4I 2020, and Kaggle PdM datasets.
-219,000 records, 10 assets, 5 machine types, 3+ years. Breakdown rate ~9.9%.
+### Maintenance Copilot
+- `POST /copilot/diagnose`: Ingests telemetry, executes LangGraph agent, returns structured Work Order & graph trace.
+- `POST /copilot/search-manuals`: RAG semantic vector search across equipment SOPs with cosine similarity scores.
+- `GET /copilot/manuals`: Lists equipment manuals and technical specs (filterable by machine type).
+- `GET /copilot/work-orders`: Returns ledger of recent autonomous work orders.
 
----
-
-## Machines
-
-| Machine | Criticality | Failure Mode |
-|---------|-------------|--------------|
-| CNC Lathe | A | Bearing wear, misalignment |
-| Hydraulic Press | A | Seal failure, pressure loss |
-| Belt Conveyor | B | Belt wear, roller failure |
-| Screw Compressor | B | Valve wear, overheating |
-| EOT Crane | C | Brake wear, electrical fault |
+### Core ML & Streaming
+- `WS /ws/scored-stream`: Real-time WebSocket streaming pre-calculated anomaly scores, health scores, and automatic Copilot triage events.
+- `POST /predict`: Real-time single sensor prediction with validation and audit logging.
+- `POST /upload-and-train`: Trains model on uploaded dataset and registers version in Model Registry.
+- `POST /ingest/mqtt` & `POST /ingest/opcua`: Industrial protocol edge ingestion.
 
 ---
 
-## Quick Start
+## Interactive Plotly Visualizations in Streamlit
 
+The Streamlit application features rich, responsive Plotly visualizations:
+1. **SHAP Feature Contribution Waterfall/Bar**: Visualizes individual sensor push/pull forces driving anomaly predictions.
+2. **RAG Vector Similarity & Confidence Gauge**: Displays real-time SOP document relevance against novelty gating thresholds.
+3. **Multi-Sensor Deviation Radar**: Spider plot comparing real-time anomalous telemetry against nominal OEM operational boundaries.
+4. **LangGraph Agent Execution Visualizer**: Step-by-step trace showing real-time execution flow through all 6 graph nodes.
+5. **Live Fleet Monitor & Degradation Gauges**: Real-time asset health tracking and degradation curves.
+
+---
+
+## Quick Start & Running Locally
+
+### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
+```
+
+### 2. Launch Streamlit Application
+```bash
 streamlit run frontend/app.py
 ```
+*The app auto-generates a 2-year synthetic dataset, trains the model on first launch, indexes the equipment manuals into the vector store, and starts the live monitoring loop.*
 
-App auto-generates data and trains the model on first launch.
-
-## Local Backend
-
+### 3. Launch Backend API (Optional)
 ```bash
-uvicorn backend.main:app --reload
+uvicorn backend.main:app --reload --port 8000
 ```
 
-## Docker
-
-```bash
-docker-compose up --build
-```
-
-## Tests
-
+### 4. Run Test Suite
 ```bash
 pytest tests/ -v
 ```
 
 ---
 
-## Stack
+## Technology Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Streamlit 1.35 + Plotly 5.22 |
-| Validation | Pydantic 2.7 |
-| ML | scikit-learn 1.4, SHAP 0.45 |
-| Backend | FastAPI 0.111 + WebSocket |
-| Protocols | MQTT, OPC-UA (ingestion layer) |
-| Database | Supabase (PostgreSQL) |
-| CI/CD | GitHub Actions |
-| Deploy | Streamlit Cloud, Docker |
-| Python | 3.11 |
-
-## Edge‑Gateway Architecture
-
-The system now follows a **Local Edge‑Gateway‑First** design. All sensor ingestion, OPC‑UA write‑back, and database operations run on‑premises behind the factory firewall. TimescaleDB provides a high‑performance time‑series store on the edge node.
-
-### OT Write‑Back Service (`backend/ot_writeback.py`)
-
-- Exposes `async trigger_emergency_stop(asset_id: str, reason: str)`.
-- Maintains a pooled OPC‑UA client connection to the PLC endpoint.
-- Sends a 1‑second heartbeat to verify connectivity.
-- Performs exponential‑backoff retries on network failures.
-- Logs critical failures with `logging.critical`.
-
-### Ingestion Worker (`backend/ingestion_worker.py`)
-
-- Subscribes to the local Mosquitto broker on `factory/sensors/#`.
-- Parses incoming JSON payloads and validates them via `sensor_validator.py`.
-- Writes validated readings in batches to TimescaleDB using the `timescaledb` helper functions.
-- Gracefully pauses MQTT consumption if the DB connection is lost, preserving message offsets.
-
-## Database Migrations (`backend/migrations.sql`)
-
-- Creates `predictions`, `audit_logs`, and `alerts` tables with `asset_id` and indexed `timestamp`.
-- Converts `predictions` and `audit_logs` to TimescaleDB hypertables.
-- Adds a retention policy that compresses data older than **7 days** to conserve edge‑gateway storage.
-
-## Updating the Repository
-
-```bash
-git add backend/ot_writeback.py backend/ingestion_worker.py backend/migrations.sql README.md
-git commit -m "Add OT write‑back service, MQTT ingestion worker, and database migrations for edge‑gateway architecture"
-git push origin main
-```
-
----
-
-## References
-
-- Breiman (2001). Random Forests. Machine Learning 45(1).
-- Lundberg & Lee (2017). SHAP. NeurIPS.
-- Liu et al. (2008). Isolation Forest. IEEE ICDM.
-- Matzka (2020). AI4I 2020 PdM Dataset. UCI ML Repository.
-
-Full citations in the app References page.
+| **Agentic Framework** | **LangGraph**, **LangChain Core** |
+| **Vector Store & RAG** | **ChromaDB**, Vector Semantic Search Engine |
+| **Explainable AI (XAI)** | **SHAP** (TreeExplainer & Local Attribution) |
+| **Frontend UI** | **Streamlit 1.35+**, **Plotly 5.22+** (100% interactive) |
+| **Backend API** | **FastAPI**, **WebSockets**, **Uvicorn** |
+| **Validation & Schemas** | **Pydantic 2.7**, Physical Limit Rules |
+| **Machine Learning** | **scikit-learn 1.4** (Random Forest, Isolation Forest) |
+| **Edge Storage** | **TimescaleDB / PostgreSQL** |
+| **OT Protocols** | **MQTT**, **OPC-UA** write-back |
 
 ---
 
