@@ -104,11 +104,20 @@ def rag_retrieval_node(state: CopilotState) -> Dict[str, Any]:
     """Node 3: Retrieves relevant equipment manual SOP sections from vector store."""
     machine_type = state.get("machine_type", "CNC Lathe")
     top_features = state.get("shap_top_features", [])
-    
-    # Construct targeted RAG query
+    telemetry    = state.get("telemetry", {})
+
+    # Construct targeted RAG query including raw sensor values so extreme
+    # out-of-envelope readings produce lower similarity (novelty detection)
     feature_names = " ".join([f["display_name"] for f in top_features])
-    symptoms = state.get("anomaly_symptoms", "")
-    query_text = f"{machine_type} failure {feature_names} {symptoms}"
+    symptoms      = state.get("anomaly_symptoms", "")
+
+    # Append raw sensor values: extreme values diverge from manual vocabulary
+    sensor_value_str = " ".join([
+        f"{k}={v:.1f}"
+        for k, v in telemetry.items()
+        if isinstance(v, (int, float)) and k not in ("asset_tag", "machine_type")
+    ])
+    query_text = f"{machine_type} failure {feature_names} {symptoms} {sensor_value_str}"
 
     indexer = get_rag_indexer()
     rag_result = indexer.search_manuals(
@@ -141,20 +150,29 @@ def rag_retrieval_node(state: CopilotState) -> Dict[str, Any]:
 
 def confidence_gate_node(state: CopilotState) -> Dict[str, Any]:
     """Node 4: Computes confidence score and assigns escalation tier."""
-    top_sim = state.get("top_similarity", 0.0)
-    is_novel = state.get("is_novel_anomaly", False)
+    top_sim      = state.get("top_similarity", 0.0)
+    is_novel     = state.get("is_novel_anomaly", False)   # from RAG node
     health_score = state.get("health_score", 100.0)
-    risk_level = state.get("risk_level", "NORMAL")
+    risk_level   = state.get("risk_level", "NORMAL")
     top_features = state.get("shap_top_features", [])
 
-    # Composite confidence calculation
-    # Based on RAG relevance, health drop severity, and sensor consistency
+    # Base confidence = RAG similarity boosted slightly
     base_confidence = min(1.0, top_sim * 1.15)
-    
-    # Severe health score drop with low RAG match increases novelty risk
-    if health_score < 40 and top_sim < 0.55:
+
+    # --- Novelty promotion rules ---
+    # 1. Severe health drop with weak SOP match
+    if health_score < 45 and top_sim < 0.60:
         is_novel = True
-        base_confidence = max(0.20, base_confidence * 0.75)
+        base_confidence = max(0.20, base_confidence * 0.70)
+
+    # 2. Multiple extreme SHAP drivers with weak RAG coverage
+    extreme_drivers = sum(1 for f in top_features if abs(f.get("shap_impact", 0)) > 0.3)
+    if extreme_drivers >= 2 and top_sim < 0.65:
+        is_novel = True
+        base_confidence = max(0.20, base_confidence * 0.80)
+
+    # 3. Any RAG-flagged novelty is always honoured
+    # (is_novel already True from RAG node if sim < NOVELTY_SIMILARITY_THRESHOLD)
 
     confidence_score = round(max(0.15, min(0.98, base_confidence)), 2)
 

@@ -428,6 +428,142 @@ def ttf_gantt(results: list[dict]) -> go.Figure:
 
 # ── Maintenance Copilot Interactive Charts ────────────────────────────────────
 
+def copilot_langgraph_flow_chart(graph_trace: list[dict] | None = None) -> go.Figure:
+    """
+    Interactive Sankey-style flow diagram visualising the 6-node LangGraph
+    Maintenance Copilot execution.  Completed nodes are highlighted; trace
+    summaries appear in hover tooltips.
+    """
+    nodes = [
+        "Telemetry\nIngestion",
+        "SHAP\nAttribution",
+        "Vector RAG\nRetrieval",
+        "Novelty\nGate",
+        "Work Order\nDrafting",
+        "Escalation\nDispatch",
+    ]
+    # Build a status map from the trace (step numbers are 1-indexed)
+    status_map: dict[int, str] = {}
+    summary_map: dict[int, str] = {}
+    if graph_trace:
+        for t in graph_trace:
+            idx = t.get("step", 0) - 1
+            status_map[idx] = t.get("status", "PENDING")
+            summary_map[idx] = t.get("summary", "")
+
+    # Node positions on an arc
+    import math
+    n = len(nodes)
+    x_pos = [i / (n - 1) for i in range(n)]
+    y_pos = [0.5 + 0.18 * math.sin(math.pi * i / (n - 1)) for i in range(n)]
+
+    completed_color = "#2ecc71"
+    pending_color   = "#4a5568"
+    active_color    = "#3b82f6"
+
+    node_colors = []
+    for i in range(n):
+        s = status_map.get(i, "PENDING")
+        node_colors.append(
+            completed_color if s == "COMPLETED" else
+            active_color    if s == "RUNNING"   else
+            pending_color
+        )
+
+    hover_texts = [
+        f"<b>Node {i+1}: {nodes[i].replace(chr(10),' ')}</b><br>"
+        f"Status: {status_map.get(i, 'PENDING')}<br>"
+        f"{summary_map.get(i, 'Awaiting execution...')}"
+        for i in range(n)
+    ]
+
+    fig = go.Figure()
+
+    # Draw curved edges between consecutive nodes
+    for i in range(n - 1):
+        mx = (x_pos[i] + x_pos[i + 1]) / 2
+        my = max(y_pos[i], y_pos[i + 1]) + 0.12
+        edge_color = completed_color if (status_map.get(i, "") == "COMPLETED" and
+                                         status_map.get(i + 1, "") != "PENDING") else "#374151"
+        # Quadratic bezier approximated with many intermediate points
+        t_vals = np.linspace(0, 1, 40)
+        bx = (1 - t_vals)**2 * x_pos[i] + 2 * (1 - t_vals) * t_vals * mx + t_vals**2 * x_pos[i + 1]
+        by = (1 - t_vals)**2 * y_pos[i] + 2 * (1 - t_vals) * t_vals * my  + t_vals**2 * y_pos[i + 1]
+        fig.add_trace(go.Scatter(
+            x=bx, y=by,
+            mode="lines",
+            line=dict(color=edge_color, width=2.5, dash="dot" if edge_color == "#374151" else "solid"),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        # Arrowhead marker at destination
+        fig.add_trace(go.Scatter(
+            x=[x_pos[i + 1]], y=[y_pos[i + 1]],
+            mode="markers",
+            marker=dict(symbol="arrow", size=12, color=edge_color,
+                        angleref="previous", angle=0),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+    # Node circles
+    fig.add_trace(go.Scatter(
+        x=x_pos,
+        y=y_pos,
+        mode="markers+text",
+        marker=dict(
+            size=52,
+            color=node_colors,
+            line=dict(color="#1f2937", width=3),
+            symbol="circle",
+        ),
+        text=[f"<b>{n_label.replace(chr(10), '<br>')}</b>" for n_label in nodes],
+        textposition="middle center",
+        textfont=dict(size=9, color="#ffffff"),
+        hovertext=hover_texts,
+        hoverinfo="text",
+        hoverlabel=dict(bgcolor="#161b22", bordercolor="#3b82f6",
+                        font=dict(color="#c9d1d9", size=11)),
+        showlegend=False,
+    ))
+
+    # Step number badges
+    for i in range(n):
+        fig.add_annotation(
+            x=x_pos[i], y=y_pos[i] - 0.14,
+            text=f"Step {i + 1}",
+            font=dict(size=9, color="#8b949e"),
+            showarrow=False,
+        )
+
+    # Legend entries
+    for label, color in [("Completed ✅", completed_color),
+                          ("Running ⚡", active_color),
+                          ("Pending ⏳", pending_color)]:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=10, color=color),
+            name=label, showlegend=True,
+        ))
+
+    fig.update_layout(
+        title=dict(
+            text="<b>🕸️ LangGraph Maintenance Copilot — Agent Execution Flow</b>",
+            font=dict(size=14, color="#c9d1d9"),
+        ),
+        template=DARK,
+        height=310,
+        xaxis=dict(visible=False, range=[-0.08, 1.08]),
+        yaxis=dict(visible=False, range=[0.18, 0.90]),
+        plot_bgcolor="#0d1117",
+        paper_bgcolor="#0d1117",
+        margin=dict(l=10, r=10, t=50, b=30),
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.02,
+                    font=dict(size=10, color="#8b949e")),
+    )
+    return fig
+
+
 def copilot_shap_waterfall_chart(top_features: list[dict]) -> go.Figure:
     """Horizontal bar chart showing positive/negative SHAP feature contributions for the anomaly."""
     if not top_features:
@@ -437,23 +573,57 @@ def copilot_shap_waterfall_chart(top_features: list[dict]) -> go.Figure:
     df["color"] = df["shap_impact"].apply(lambda x: "#e74c3c" if x > 0 else "#2ecc71")
     df = df.iloc[::-1]  # reverse for top-down display
 
+    # Rich hover template
+    hover_texts = [
+        f"<b>{row['display_name']}</b><br>"
+        f"SHAP Impact: <b>{row['shap_impact']:+.4f}</b><br>"
+        f"Raw Value: <b>{row['raw_value']}</b><br>"
+        f"Direction: <b>{row['direction'].upper()}</b><br>"
+        f"{'⬆ Drives failure risk' if row['shap_impact'] > 0 else '⬇ Reduces failure risk'}"
+        for _, row in df.iterrows()
+    ]
+
     fig = go.Figure(go.Bar(
         x=df["shap_impact"],
         y=df["display_name"],
         orientation="h",
-        marker_color=df["color"],
-        text=[f"{val:+.3f} (Val: {raw})" for val, raw in zip(df["shap_impact"], df["raw_value"])],
+        marker=dict(
+            color=df["color"],
+            line=dict(color="#1f2937", width=1),
+            opacity=0.85,
+        ),
+        text=[f"{val:+.3f}" for val in df["shap_impact"]],
         textposition="outside",
-        hovertemplate="<b>%{y}</b><br>SHAP Contribution: %{x:+.4f}<extra></extra>"
+        hovertext=hover_texts,
+        hoverinfo="text",
+        hoverlabel=dict(bgcolor="#161b22", bordercolor="#e74c3c",
+                        font=dict(color="#c9d1d9", size=11)),
     ))
 
+    # Zero baseline
+    fig.add_vline(x=0, line_color="#4a5568", line_width=1.5)
+
     fig.update_layout(
-        title="<b>SHAP Local Attribution: Drivers of Anomaly</b>",
-        xaxis_title="SHAP Impact (Positive = Drives Failure Risk)",
-        yaxis_title="Sensor Feature",
+        title=dict(
+            text="<b>SHAP Local Attribution — Failure Drivers</b>",
+            font=dict(size=13, color="#c9d1d9"),
+        ),
+        xaxis=dict(
+            title="SHAP Impact (+ = Drives Failure, − = Reduces Risk)",
+            title_font=dict(size=10, color="#8b949e"),
+            tickfont=dict(size=9, color="#8b949e"),
+            gridcolor="#21262d",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="",
+            tickfont=dict(size=10, color="#c9d1d9"),
+        ),
         template=DARK,
         height=320,
-        margin=dict(l=10, r=40, t=50, b=30),
+        margin=dict(l=10, r=50, t=45, b=30),
+        plot_bgcolor="#0d1117",
+        paper_bgcolor="#0d1117",
     )
     return fig
 
@@ -462,33 +632,66 @@ def copilot_confidence_gauge(confidence_score: float, is_novel: bool = False) ->
     """Plotly gauge for RAG SOP match confidence and novel anomaly detection."""
     conf_pct = confidence_score * 100
     color = "#e74c3c" if is_novel or conf_pct < 55 else ("#f39c12" if conf_pct < 75 else "#2ecc71")
+    label = "⚠️ NOVEL ANOMALY" if is_novel else ("MODERATE MATCH" if conf_pct < 75 else "HIGH CONFIDENCE")
 
     fig = go.Figure(go.Indicator(
         mode="gauge+number+delta",
         value=conf_pct,
-        number={"suffix": "%", "font": {"size": 36, "color": color}},
-        title={"text": "<b>RAG SOP Match Confidence</b><br><span style='font-size:0.8em;color:#8b949e'>" + 
-               ("⚠️ NOVEL ANOMALY DETECTED" if is_novel else "STANDARD SOP COVERAGE") + "</span>", "font": {"size": 16}},
+        number={"suffix": "%", "font": {"size": 34, "color": color}},
+        delta={"reference": 52, "increasing": {"color": "#2ecc71"}, "decreasing": {"color": "#e74c3c"},
+               "font": {"size": 11}},
+        title={
+            "text": (
+                f"<b>SOP Match Confidence</b><br>"
+                f"<span style='font-size:0.75em;color:#8b949e'>{label}</span>"
+            ),
+            "font": {"size": 13},
+        },
         gauge={
-            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#8b949e"},
+            "axis": {
+                "range": [0, 100],
+                "tickwidth": 1,
+                "tickcolor": "#4a5568",
+                "tickvals": [0, 52, 75, 100],
+                "ticktext": ["0%", "52%\nNovelty", "75%\nL2", "100%"],
+                "tickfont": {"size": 8, "color": "#8b949e"},
+            },
             "bar": {"color": color, "thickness": 0.28},
             "bgcolor": "#161b22",
             "borderwidth": 1,
             "bordercolor": "#30363d",
             "steps": [
-                {"range": [0, 52], "color": "rgba(231, 76, 60, 0.25)"},
-                {"range": [52, 75], "color": "rgba(243, 156, 18, 0.25)"},
-                {"range": [75, 100], "color": "rgba(46, 204, 113, 0.25)"},
+                {"range": [0,  52], "color": "rgba(231,76,60,0.20)"},
+                {"range": [52, 75], "color": "rgba(243,156,18,0.20)"},
+                {"range": [75, 100], "color": "rgba(46,204,113,0.20)"},
             ],
             "threshold": {
-                "line": {"color": "#ffffff", "width": 3},
-                "thickness": 0.8,
+                "line": {"color": "#f39c12", "width": 3},
+                "thickness": 0.75,
                 "value": 52,
             },
-        }
+        },
     ))
 
-    fig.update_layout(template=DARK, height=260, margin=dict(l=20, r=20, t=50, b=20))
+    # Tier annotations
+    for x_norm, label_txt, color_txt in [
+        (0.18, "L3\nNovel", "#e74c3c"),
+        (0.50, "L2\nSenior", "#f39c12"),
+        (0.82, "L1\nSOP", "#2ecc71"),
+    ]:
+        fig.add_annotation(
+            x=x_norm, y=0.08, xref="paper", yref="paper",
+            text=f"<span style='font-size:8px;color:{color_txt}'>{label_txt}</span>",
+            showarrow=False, align="center",
+        )
+
+    fig.update_layout(
+        template=DARK,
+        height=270,
+        margin=dict(l=20, r=20, t=55, b=10),
+        plot_bgcolor="#0d1117",
+        paper_bgcolor="#0d1117",
+    )
     return fig
 
 
@@ -500,60 +703,97 @@ def copilot_radar_chart(telemetry: dict, machine_type: str = "CNC Lathe") -> go.
     current_vals_norm = []
     nominal_baseline_norm = []
     raw_hover = []
+    raw_vals = []
 
     for k, (low, high) in NOMINAL_BASELINES.items():
         if k in telemetry:
             val = float(telemetry.get(k, 0.0))
-            display = FEATURE_DISPLAY_NAMES.get(k, k).split(" ")[0]
+            display = FEATURE_DISPLAY_NAMES.get(k, k).split(" (")[0]
             categories.append(display)
             
-            # Normalize to 0-100 scale based on nominal window
             span = max(high - low, 1.0)
             norm_val = max(0, min(150, ((val - low) / span) * 50 + 50))
             current_vals_norm.append(norm_val)
-            nominal_baseline_norm.append(50)  # nominal reference line
-            raw_hover.append(f"{k}: {val:.2f} (Nominal: {low:.1f}-{high:.1f})")
+            nominal_baseline_norm.append(50)
+            raw_hover.append(f"{k}: {val:.2f} (Nominal: {low:.1f}–{high:.1f})")
+            raw_vals.append(val)
 
     if not categories:
         return go.Figure()
 
     # Close polygon loop
-    categories.append(categories[0])
-    current_vals_norm.append(current_vals_norm[0])
-    nominal_baseline_norm.append(nominal_baseline_norm[0])
+    categories_closed     = categories + [categories[0]]
+    current_closed        = current_vals_norm + [current_vals_norm[0]]
+    nominal_closed        = nominal_baseline_norm + [nominal_baseline_norm[0]]
 
     fig = go.Figure()
 
-    # Nominal range trace
+    # Nominal band
     fig.add_trace(go.Scatterpolar(
-        r=nominal_baseline_norm,
-        theta=categories,
+        r=nominal_closed,
+        theta=categories_closed,
         fill="toself",
-        fillcolor="rgba(46, 204, 113, 0.15)",
+        fillcolor="rgba(46,204,113,0.12)",
         line=dict(color="#2ecc71", dash="dash", width=1.5),
         name="Nominal Baseline",
+        hoverinfo="skip",
     ))
 
-    # Anomaly reading trace
+    # Anomaly reading with rich hover
     fig.add_trace(go.Scatterpolar(
-        r=current_vals_norm,
-        theta=categories,
+        r=current_closed,
+        theta=categories_closed,
         fill="toself",
-        fillcolor="rgba(231, 76, 60, 0.3)",
+        fillcolor="rgba(231,76,60,0.25)",
         line=dict(color="#e74c3c", width=2.5),
         name="Current Anomaly State",
+        hovertext=[f"<b>{c}</b><br>{h}" for c, h in zip(categories_closed, raw_hover + [raw_hover[0]])],
+        hoverinfo="text",
+        hoverlabel=dict(bgcolor="#161b22", bordercolor="#e74c3c",
+                        font=dict(color="#c9d1d9", size=11)),
+        mode="lines+markers",
+        marker=dict(size=6, color="#e74c3c"),
+    ))
+
+    # Upper warning band (>100 = out-of-range)
+    fig.add_trace(go.Scatterpolar(
+        r=[100] * len(categories_closed),
+        theta=categories_closed,
+        fill="none",
+        line=dict(color="#f39c12", width=1, dash="dot"),
+        name="Warning Limit (100%)",
+        hoverinfo="skip",
     ))
 
     fig.update_layout(
         polar=dict(
-            radialaxis=dict(visible=True, range=[0, 150], showticklabels=False),
-            bgcolor="#161b22"
+            radialaxis=dict(
+                visible=True,
+                range=[0, 150],
+                showticklabels=True,
+                tickvals=[0, 50, 100, 150],
+                ticktext=["0", "Normal", "⚠️ High", "🚨 Critical"],
+                tickfont=dict(size=8, color="#8b949e"),
+                gridcolor="#21262d",
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=9, color="#c9d1d9"),
+                gridcolor="#21262d",
+            ),
+            bgcolor="#0d1117",
         ),
-        title=f"<b>Telemetry Deviation Radar ({machine_type})</b>",
+        title=dict(
+            text=f"<b>Telemetry Deviation Radar — {machine_type}</b>",
+            font=dict(size=13, color="#c9d1d9"),
+        ),
         template=DARK,
-        height=320,
+        height=330,
         margin=dict(l=30, r=30, t=50, b=20),
-        showlegend=True,
+        legend=dict(
+            orientation="h", x=0.5, xanchor="center", y=-0.05,
+            font=dict(size=9, color="#8b949e"),
+        ),
+        paper_bgcolor="#0d1117",
     )
     return fig
 
@@ -563,17 +803,36 @@ def copilot_retrieval_similarity_chart(retrieved_manuals: list[dict], threshold:
     if not retrieved_manuals:
         return go.Figure()
 
-    titles = [f"{d.get('manual_id')}: {d.get('title')[:30]}..." for d in retrieved_manuals]
-    sims = [d.get("similarity_score", 0.0) * 100 for d in retrieved_manuals]
+    titles = [f"[{d.get('manual_id')}] {d.get('title', '')[:35]}…" for d in retrieved_manuals]
+    sims   = [d.get("similarity_score", 0.0) * 100 for d in retrieved_manuals]
     colors = ["#2ecc71" if s >= threshold * 100 else "#e74c3c" for s in sims]
+
+    hover_texts = [
+        f"<b>{d.get('manual_id')}</b><br>"
+        f"{d.get('title')}<br>"
+        f"Machine: {d.get('machine_type')}<br>"
+        f"Subsystem: {d.get('subsystem')}<br>"
+        f"Similarity: <b>{s:.1f}%</b><br>"
+        f"MTTR: {d.get('estimated_mttr_hours', 'N/A')} hrs<br>"
+        f"{'✅ Above threshold — SOP coverage confirmed' if s >= threshold * 100 else '🚨 Below threshold — Novel signature'}"
+        for d, s in zip(retrieved_manuals, sims)
+    ]
 
     fig = go.Figure(go.Bar(
         x=sims,
         y=titles,
         orientation="h",
-        marker_color=colors,
+        marker=dict(
+            color=colors,
+            line=dict(color="#1f2937", width=1),
+            opacity=0.85,
+        ),
         text=[f"{s:.1f}%" for s in sims],
         textposition="outside",
+        hovertext=hover_texts,
+        hoverinfo="text",
+        hoverlabel=dict(bgcolor="#161b22", bordercolor="#3b82f6",
+                        font=dict(color="#c9d1d9", size=11)),
     ))
 
     # Threshold line
@@ -581,17 +840,31 @@ def copilot_retrieval_similarity_chart(retrieved_manuals: list[dict], threshold:
         x=threshold * 100,
         line_dash="dot",
         line_color="#f39c12",
+        line_width=2,
         annotation_text=f"Novelty Threshold ({threshold * 100:.0f}%)",
-        annotation_position="top right"
+        annotation_position="top right",
+        annotation_font=dict(size=9, color="#f39c12"),
     )
 
     fig.update_layout(
-        title="<b>Vector Store RAG Retrieval Match Scores</b>",
-        xaxis=dict(title="Similarity Score (%)", range=[0, 105]),
-        yaxis_title="Retrieved Equipment SOP",
+        title=dict(
+            text="<b>Vector RAG Retrieval — SOP Match Scores</b>",
+            font=dict(size=13, color="#c9d1d9"),
+        ),
+        xaxis=dict(
+            title="Cosine Similarity Score (%)",
+            range=[0, 110],
+            tickfont=dict(size=9, color="#8b949e"),
+            gridcolor="#21262d",
+        ),
+        yaxis=dict(
+            tickfont=dict(size=9, color="#c9d1d9"),
+        ),
         template=DARK,
-        height=260,
-        margin=dict(l=10, r=30, t=50, b=30),
+        height=270,
+        margin=dict(l=10, r=50, t=45, b=30),
+        plot_bgcolor="#0d1117",
+        paper_bgcolor="#0d1117",
     )
     return fig
 
