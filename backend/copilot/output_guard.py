@@ -1,10 +1,8 @@
 """Fail-closed Guardrails and source-provenance checks for maintenance work orders."""
 from __future__ import annotations
 
-import json
 from typing import Any, Mapping
 
-from guardrails import Guard
 from pydantic import BaseModel, ConfigDict
 
 
@@ -23,9 +21,6 @@ class WorkOrderOutput(BaseModel):
     manual_citations: list[str]
 
 
-_WORK_ORDER_GUARD = Guard.from_pydantic(output_class=WorkOrderOutput)
-
-
 def validate_work_order(
     work_order: Mapping[str, Any],
     sources: list[Mapping[str, Any]],
@@ -36,9 +31,13 @@ def validate_work_order(
     function fails closed instead of trying to repair safety-critical text.
     """
     payload = dict(work_order)
-    parsed = _WORK_ORDER_GUARD.parse(json.dumps(payload, ensure_ascii=False))
-    if not parsed.validation_passed:
-        raise ValueError("Guardrails rejected the maintenance work order")
+    # Validate directly with Pydantic. Guardrails' ``Guard.from_pydantic`` is
+    # not available in all supported Guardrails releases and was raising during
+    # module import, preventing Streamlit from starting at all.
+    try:
+        payload = WorkOrderOutput.model_validate(payload).model_dump()
+    except Exception as exc:
+        raise ValueError("Invalid maintenance work order structure") from exc
 
     source_by_id = {str(source.get("vector_chunk_id")): source for source in sources}
     citations = payload.get("manual_citations", [])
