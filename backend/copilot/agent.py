@@ -11,6 +11,7 @@ import datetime
 from typing import Dict, Any, List, Optional
 
 from langgraph.graph import StateGraph, END
+from opentelemetry.trace import Status, StatusCode
 
 from backend.config import get_settings
 from backend.copilot.state import CopilotState
@@ -18,8 +19,28 @@ from backend.copilot.rag_engine import get_rag_indexer, NOVELTY_SIMILARITY_THRES
 from backend.copilot.shap_explainer import explain_reading_shap
 from backend.health_score import compute_health_score
 from backend import ml_engine
+from backend.telemetry import get_tracer
+from backend.copilot.output_guard import validate_work_order
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer(__name__)
+
+
+def _traced_node(name, node_function):
+    """Wrap a synchronous LangGraph node in an exception-aware OTel span."""
+    def invoke(state):
+        with tracer.start_as_current_span(f"copilot.node.{name}") as span:
+            span.set_attribute("langgraph.node", name)
+            try:
+                result = node_function(state)
+                span.set_attribute("langgraph.node.status", "completed")
+                return result
+            except Exception as exc:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                raise
+    invoke.__name__ = f"traced_{name}"
+    return invoke
 
 
 # ── LangGraph Node Implementations ───────────────────────────────────────────
@@ -244,12 +265,13 @@ def work_order_drafter_node(state: CopilotState) -> Dict[str, Any]:
 
     # Primary matched manual
     top_doc = retrieved[0] if retrieved else {
-        "manual_id": "GEN-SOP-000",
+        "manual_id": None,
+        "vector_chunk_id": None,
         "title": "General Machine Inspection Procedure",
         "subsystem": "General Mechanics",
-        "sop_steps": ["1. Conduct multi-point visual inspection.", "2. Check lubrication levels and thermal equilibrium."],
-        "safety_protocol": "Standard LOTO Isolation.",
-        "required_parts": ["General Fasteners & Seal Kit"],
+        "sop_steps": [],
+        "safety_protocol": "",
+        "required_parts": [],
         "estimated_mttr_hours": 2.0,
         "tolerances": "Standard OEM limits",
     }
@@ -268,15 +290,20 @@ def work_order_drafter_node(state: CopilotState) -> Dict[str, Any]:
         "escalation_tier": escalation_tier,
         "is_novel_anomaly": is_novel,
         "matched_sop_id": top_doc.get("manual_id"),
+        "matched_sop_chunk_id": top_doc.get("vector_chunk_id"),
         "matched_sop_title": top_doc.get("title"),
+        "manual_citations": [doc.get("vector_chunk_id") for doc in retrieved],
         "subsystem": top_doc.get("subsystem"),
         "estimated_mttr_hours": top_doc.get("estimated_mttr_hours", 2.5),
         "required_parts": top_doc.get("required_parts", []),
         "clearance_tolerances": top_doc.get("tolerances", "Refer to OEM manual"),
-        "safety_protocol": top_doc.get("safety_protocol", "Standard LOTO Isolation"),
+        "safety_protocol": top_doc.get("safety_protocol", ""),
         "recommended_actions": top_doc.get("sop_steps", []),
         "shap_drivers": [f["display_name"] + f" ({f['shap_impact']:+.2f})" for f in top_features],
     }
+
+    # Reject any deviation from retrieved OEM safety procedures, citations, or BOM.
+    validate_work_order(structured_wo, retrieved)
 
     # Build detailed Markdown Work Order
     escalation_badge = ""
@@ -287,8 +314,10 @@ def work_order_drafter_node(state: CopilotState) -> Dict[str, Any]:
     else:
         escalation_badge = "✅ **LEVEL 1 STANDARD SOP EXECUTION — CONFIDENCE GATED (Autonomous Dispatch)**"
 
-    sop_steps_formatted = "\n".join([f"- {s}" for s in top_doc.get("sop_steps", [])])
-    parts_formatted = "\n".join([f"- {p}" for p in top_doc.get("required_parts", [])])
+    chunk_citation = top_doc.get("vector_chunk_id")
+    citation_suffix = f" [vector chunk: `{chunk_citation}`]" if chunk_citation else ""
+    sop_steps_formatted = "\n".join([f"- {s}{citation_suffix}" for s in top_doc.get("sop_steps", [])])
+    parts_formatted = "\n".join([f"- {p}{citation_suffix}" for p in top_doc.get("required_parts", [])])
 
     markdown_wo = f"""# 📋 INDUSTRIAL MAINTENANCE WORK ORDER: {wo_id}
 **Asset Tag:** `{asset_tag}` | **Machine Type:** `{machine_type}` | **Priority:** `{priority}`
@@ -311,7 +340,7 @@ def work_order_drafter_node(state: CopilotState) -> Dict[str, Any]:
 ---
 
 ### 📚 2. Cross-Referenced OEM Manual & SOP Reference
-- **Matched Manual ID:** `{top_doc.get('manual_id')}` ({top_doc.get('title')})
+- **Matched Manual ID:** `{top_doc.get('manual_id')}` ({top_doc.get('title')}){citation_suffix}
 - **Subsystem Focus:** `{top_doc.get('subsystem')}`
 - **Clearance & Torque Tolerances:** `{top_doc.get('tolerances')}`
 - **RAG Vector Match Similarity:** `{state.get('top_similarity', 0.0):.2f}`
@@ -324,7 +353,7 @@ def work_order_drafter_node(state: CopilotState) -> Dict[str, Any]:
 ---
 
 ### ⚠️ 4. Safety & Lockout/Tagout (LOTO) Protocol
-> **CRITICAL SAFETY DIRECTIVE:** {top_doc.get('safety_protocol')}
+> **CRITICAL SAFETY DIRECTIVE:** {top_doc.get('safety_protocol')}{citation_suffix}
 
 ---
 
@@ -390,12 +419,12 @@ def build_maintenance_copilot_graph():
     workflow = StateGraph(CopilotState)
 
     # Register Nodes
-    workflow.add_node("intake_telemetry", intake_telemetry_node)
-    workflow.add_node("shap_explainer", shap_explainer_node)
-    workflow.add_node("rag_retrieval", rag_retrieval_node)
-    workflow.add_node("confidence_gate", confidence_gate_node)
-    workflow.add_node("work_order_drafter", work_order_drafter_node)
-    workflow.add_node("escalation_router", escalation_router_node)
+    workflow.add_node("intake_telemetry", _traced_node("intake_telemetry", intake_telemetry_node))
+    workflow.add_node("shap_explainer", _traced_node("shap_explainer", shap_explainer_node))
+    workflow.add_node("rag_retrieval", _traced_node("rag_retrieval", rag_retrieval_node))
+    workflow.add_node("confidence_gate", _traced_node("confidence_gate", confidence_gate_node))
+    workflow.add_node("work_order_drafter", _traced_node("work_order_drafter", work_order_drafter_node))
+    workflow.add_node("escalation_router", _traced_node("escalation_router", escalation_router_node))
 
     # Set Entry Point
     workflow.set_entry_point("intake_telemetry")

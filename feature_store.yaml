@@ -1,0 +1,8 @@
+project: predmaint_industrial
+registry: data/feast/registry.db
+provider: local
+online_store:
+  type: sqlite
+  path: data/feast/online_store.db
+offline_store:
+  type: file

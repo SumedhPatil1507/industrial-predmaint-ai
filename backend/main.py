@@ -16,8 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 
-from backend import ml_engine, alerts, llm_advisor, file_parser, downtime_calculator
+from backend import ml_engine, alerts, file_parser, downtime_calculator
 from backend import health_score, ttf_predictor, model_registry
+from backend.copilot.response_schema import (
+    ExplainableWorkOrderResponse,
+    build_explainable_response,
+)
 # (Removed Supabase import; using TimescaleDB)
 from backend.sensor_validator import validate_reading
 from backend.ingestion import parse_mqtt_payload, parse_opcua_frame, ingest
@@ -109,6 +113,8 @@ async def upload_predict(file: UploadFile = File(...)):
 class SensorReadingIn(BaseModel):
     asset_tag: Optional[str] = "UNKNOWN"
     machine_type: Optional[str] = "CNC Lathe"
+    # Optional spectrum-derived peak; reported only when the gateway supplies it.
+    fft_peak_hz: Optional[float] = None
     temp_bearing_degC: float
     temp_motor_degC: float
     vibration_h_mms: float
@@ -119,7 +125,7 @@ class SensorReadingIn(BaseModel):
     power_consumption_kw: float
 
 
-@app.post("/predict")
+@app.post("/predict", response_model=ExplainableWorkOrderResponse)
 async def predict(reading: SensorReadingIn, request: Request):
     if not ml_engine.model_exists():
         raise HTTPException(400, "Model not trained yet.")
@@ -128,15 +134,10 @@ async def predict(reading: SensorReadingIn, request: Request):
     # Validate before predicting
     val = validate_reading(data, _prev_readings.get(data["asset_tag"]))
     if val.malfunction:
-        return {
-            **data,
-            "prediction": None,
-            "probability": None,
-            "risk_level": "SENSOR_MALFUNCTION",
-            "anomaly_score": None,
-            "validation_status": "MALFUNCTION",
-            "malfunction_message": val.message,
-        }
+        return build_explainable_response(
+            data,
+            prediction={"validation_status": "MALFUNCTION", "risk_level": "SENSOR_MALFUNCTION"},
+        )
 
     _prev_readings[data["asset_tag"]] = data
     result = ml_engine.predict_single(data)
@@ -154,7 +155,21 @@ async def predict(reading: SensorReadingIn, request: Request):
         await alerts.fire_breakdown_alert(
             data["asset_tag"], data["machine_type"],
             result["probability"], result["risk_level"])
-    return data
+    shap_result = None
+    copilot_result = None
+    if result.get("risk_level") in ("HIGH", "CRITICAL", "MEDIUM") or result.get("probability", 0) >= 0.5:
+        from backend.copilot import run_maintenance_copilot
+        copilot_result = run_maintenance_copilot(data, trigger_source="rest_api_predict")
+        shap_result = copilot_result.get("shap_top_features")
+    if shap_result is None:
+        from backend.copilot.shap_explainer import explain_reading_shap
+        shap_result = explain_reading_shap(data).get("top_features", [])
+    return build_explainable_response(
+        data,
+        prediction=result,
+        copilot_result=copilot_result,
+        shap_features=shap_result,
+    )
 
 
 # ── MQTT Ingestion ────────────────────────────────────────────────────────────
@@ -237,18 +252,28 @@ async def shap_analysis(file: UploadFile = File(...)):
 
 # ── LLM Advisor ───────────────────────────────────────────────────────────────
 
-@app.post("/advise")
+@app.post("/advise", response_model=ExplainableWorkOrderResponse)
 async def advise(reading: SensorReadingIn):
     if not ml_engine.model_exists():
         raise HTTPException(400, "Model not trained yet.")
     data = reading.model_dump()
+    validation = validate_reading(data, _prev_readings.get(data["asset_tag"]))
+    if validation.malfunction:
+        return build_explainable_response(
+            data,
+            prediction={"validation_status": "MALFUNCTION", "risk_level": "SENSOR_MALFUNCTION"},
+        )
     result = ml_engine.predict_single(data)
     data.update(result)
-    data["top_features"] = "temp_bearing_degC, vibration_h_mms, power_consumption_kw"
-    advice = await llm_advisor.get_maintenance_advice(data)
-    await insert_audit_log("llm_advise", "machine", data["asset_tag"],
-                           {"risk": result["risk_level"]})
-    return {"prediction": result, "advice": advice}
+    from backend.copilot import run_maintenance_copilot
+    copilot_result = run_maintenance_copilot(data, trigger_source="rest_api_advise")
+    await insert_audit_log("copilot_advise", "machine", data["asset_tag"],
+                           {"risk": result["risk_level"], "source": "grounded_copilot"})
+    return build_explainable_response(
+        data,
+        prediction=result,
+        copilot_result=copilot_result,
+    )
 
 
 # ── Downtime Calculator ───────────────────────────────────────────────────────
@@ -342,7 +367,7 @@ class CopilotQueryRequest(BaseModel):
     min_threshold: Optional[float] = 0.52
 
 
-@app.post("/copilot/diagnose")
+@app.post("/copilot/diagnose", response_model=ExplainableWorkOrderResponse)
 async def copilot_diagnose(reading: SensorReadingIn):
     """
     Run the LangGraph Maintenance Copilot on sensor telemetry.
@@ -351,6 +376,12 @@ async def copilot_diagnose(reading: SensorReadingIn):
     """
     from backend.copilot import run_maintenance_copilot
     data = reading.model_dump()
+    validation = validate_reading(data, _prev_readings.get(data["asset_tag"]))
+    if validation.malfunction:
+        return build_explainable_response(
+            data,
+            prediction={"validation_status": "MALFUNCTION", "risk_level": "SENSOR_MALFUNCTION"},
+        )
     result = run_maintenance_copilot(data, trigger_source="rest_api_diagnose")
     await insert_audit_log(
         "copilot_work_order_generated",
@@ -363,7 +394,14 @@ async def copilot_diagnose(reading: SensorReadingIn):
             "is_novel": result.get("is_novel_anomaly"),
         }
     )
-    return result
+    return build_explainable_response(
+        data,
+        prediction={
+            "risk_level": result.get("risk_level"),
+            "probability": result.get("breakdown_probability"),
+        },
+        copilot_result=result,
+    )
 
 
 @app.post("/copilot/search-manuals")

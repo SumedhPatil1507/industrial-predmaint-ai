@@ -1,6 +1,6 @@
 """
-RAG Vector Store & Semantic Indexing for Industrial Equipment Manuals & SOPs.
-Provides semantic search, vector indexing, and confidence/novelty scoring.
+RAG indexing and similarity search for industrial equipment manuals and SOPs.
+Provides TF-IDF indexing, token-similarity retrieval, and novelty scoring.
 """
 
 import os
@@ -12,8 +12,10 @@ from pathlib import Path
 from collections import Counter
 
 from backend.copilot.manuals_data import get_all_manuals, get_manuals_for_machine
+from backend.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer(__name__)
 
 VECTOR_STORE_DIR = Path("models/vector_store")
 VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -24,13 +26,14 @@ NOVELTY_SIMILARITY_THRESHOLD = 0.52
 
 class ManualChunk:
     def __init__(self, doc_id: str, machine_type: str, subsystem: str, title: str,
-                 content: str, sop_steps: list[str], safety_protocol: str,
+                 content: str, root_cause_analysis: str, sop_steps: list[str], safety_protocol: str,
                  required_parts: list[str], estimated_mttr: float, tolerances: str):
         self.doc_id = doc_id
         self.machine_type = machine_type
         self.subsystem = subsystem
         self.title = title
         self.content = content
+        self.root_cause_analysis = root_cause_analysis
         self.sop_steps = sop_steps
         self.safety_protocol = safety_protocol
         self.required_parts = required_parts
@@ -44,6 +47,7 @@ class ManualChunk:
             "subsystem": self.subsystem,
             "title": self.title,
             "content": self.content,
+            "root_cause_analysis": self.root_cause_analysis,
             "sop_steps": self.sop_steps,
             "safety_protocol": self.safety_protocol,
             "required_parts": self.required_parts,
@@ -83,6 +87,7 @@ class EquipmentRAGIndexer:
                 subsystem=man["subsystem"],
                 title=man["title"],
                 content=full_text,
+                root_cause_analysis=man["root_cause_analysis"],
                 sop_steps=man["sop_steps"],
                 safety_protocol=man["safety_protocol"],
                 required_parts=man["required_parts"],
@@ -92,19 +97,22 @@ class EquipmentRAGIndexer:
             self.chunks.append(chunk)
 
     def _init_vector_store(self):
-        """Initialise in-memory vector embeddings and ChromaDB store."""
-        try:
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            self.corpus = [c.content for c in self.chunks]
-            self.vectorizer = TfidfVectorizer(
-                ngram_range=(1, 2),
-                stop_words="english",
-                sublinear_tf=True
-            )
-            self.doc_vectors = self.vectorizer.fit_transform(self.corpus)
-            logger.info(f"Vectorized {len(self.chunks)} SOP chunks into vector store.")
-        except Exception as e:
-            logger.warning(f"TFIDF Vectorizer initialization note: {e}")
+        """Build the in-memory TF-IDF index used by manual retrieval."""
+        with tracer.start_as_current_span("copilot.tfidf.index") as span:
+            try:
+                from sklearn.feature_extraction.text import TfidfVectorizer
+                self.corpus = [c.content for c in self.chunks]
+                self.vectorizer = TfidfVectorizer(
+                    ngram_range=(1, 2),
+                    stop_words="english",
+                    sublinear_tf=True
+                )
+                self.doc_vectors = self.vectorizer.fit_transform(self.corpus)
+                span.set_attribute("retrieval.document_count", len(self.chunks))
+                logger.info(f"Vectorized {len(self.chunks)} SOP chunks into vector store.")
+            except Exception as e:
+                span.record_exception(e)
+                logger.warning(f"TFIDF Vectorizer initialization note: {e}")
 
     def _tokenize(self, text: str) -> list[str]:
         text = text.lower()
@@ -162,19 +170,25 @@ class EquipmentRAGIndexer:
         Search equipment manuals for the given machine type and query text.
         Cross-references similarity and returns retrieval results with novelty gating.
         """
-        scored_results = []
+        with tracer.start_as_current_span("copilot.manual_retrieval") as span:
+            span.set_attribute("retrieval.machine_type", machine_type)
+            span.set_attribute("retrieval.top_k", top_k)
+            scored_results = []
 
-        # Filter candidate chunks matching machine_type
-        candidates = [c for c in self.chunks if not machine_type or c.machine_type.lower() == machine_type.lower()]
-        if not candidates:
-            candidates = self.chunks
+            # Filter candidate chunks matching machine_type
+            candidates = [c for c in self.chunks if not machine_type or c.machine_type.lower() == machine_type.lower()]
+            if not candidates:
+                candidates = self.chunks
 
-        for chunk in candidates:
-            sim = self._compute_cosine_sim(query, chunk)
-            scored_results.append({
-                "chunk": chunk,
-                "similarity_score": round(sim, 4),
-            })
+            with tracer.start_as_current_span("copilot.manual_similarity_scoring") as score_span:
+                score_span.set_attribute("retrieval.algorithm", "token_cosine_keyword_overlap")
+                score_span.set_attribute("retrieval.candidate_count", len(candidates))
+                for chunk in candidates:
+                    sim = self._compute_cosine_sim(query, chunk)
+                    scored_results.append({
+                        "chunk": chunk,
+                        "similarity_score": round(sim, 4),
+                    })
 
         scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
         top_matches = scored_results[:top_k]
@@ -187,9 +201,11 @@ class EquipmentRAGIndexer:
             c = item["chunk"]
             retrieved_docs.append({
                 "manual_id": c.doc_id,
+                "vector_chunk_id": f"{c.doc_id}#chunk-000",
                 "machine_type": c.machine_type,
                 "subsystem": c.subsystem,
                 "title": c.title,
+                "root_cause_analysis": c.root_cause_analysis,
                 "similarity_score": item["similarity_score"],
                 "sop_steps": c.sop_steps,
                 "safety_protocol": c.safety_protocol,

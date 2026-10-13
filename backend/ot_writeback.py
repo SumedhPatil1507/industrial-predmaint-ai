@@ -21,9 +21,12 @@ import logging
 from typing import Optional
 from asyncua import Client, ua
 from asyncua.ua.uaerrors import UaError
+from opentelemetry.trace import Status, StatusCode
+from backend.telemetry import get_tracer
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
+tracer = get_tracer(__name__)
 
 # Environment configuration (fallback defaults provided for local testing)
 OPCUA_ENDPOINT_URL = os.getenv("OPCUA_ENDPOINT_URL", "opc.tcp://localhost:4840")
@@ -69,7 +72,8 @@ class OPCUAWriteBack:
             try:
                 mode = getattr(ua.MessageSecurityMode, self.security_mode)
                 policy = getattr(ua.SecurityPolicy, self.security_policy)
-                client.set_security(policy, None, None, mode)
+                with tracer.start_as_current_span("opcua.configure_security"):
+                    client.set_security(policy, None, None, mode)
                 log.info("OPC-UA security configured: mode=%s policy=%s", self.security_mode, self.security_policy)
             except Exception as e:
                 log.warning("Failed to apply OPC-UA security settings (%s, %s): %s", self.security_mode, self.security_policy, e)
@@ -84,7 +88,9 @@ class OPCUAWriteBack:
             while not self._stop_event.is_set():
                 try:
                     self._client = await self._create_client()
-                    await self._client.connect()
+                    with tracer.start_as_current_span("opcua.connect") as span:
+                        span.set_attribute("opcua.endpoint", self.endpoint)
+                        await self._client.connect()
                     log.info("Connected to OPC-UA server %s", self.endpoint)
                     self._backoff = 1
                     return self._client
@@ -103,7 +109,8 @@ class OPCUAWriteBack:
             try:
                 client = await self._ensure_connected()
                 # Simple read of the Server_NamespaceArray node as a liveness check
-                await client.read_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
+                with tracer.start_as_current_span("opcua.heartbeat_read"):
+                    await client.read_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
                 # Reset back‑off on successful ping
                 self._backoff = 1
             except Exception as exc:
@@ -111,7 +118,8 @@ class OPCUAWriteBack:
                 # Force reconnection on next iteration
                 if self._client:
                     try:
-                        await self._client.disconnect()
+                        with tracer.start_as_current_span("opcua.disconnect"):
+                            await self._client.disconnect()
                     except Exception:
                         pass
                     self._client = None
@@ -125,15 +133,20 @@ class OPCUAWriteBack:
         PLC uses a different address space.
         """
         try:
-            client = await self._ensure_connected()
-            node_id = f"ns=2;s=Assets.{asset_id}.Emergency_Stop"
-            node = client.get_node(node_id)
-            await node.write_value(True)
-            # Optionally write a reason string to a sibling node for audit
-            reason_node = client.get_node(f"ns=2;s=Assets.{asset_id}.Emergency_Stop_Reason")
-            await reason_node.write_value(reason)
+            with tracer.start_as_current_span("opcua.emergency_stop_write") as span:
+                span.set_attribute("opcua.asset_id", asset_id)
+                client = await self._ensure_connected()
+                node_id = f"ns=2;s=Assets.{asset_id}.Emergency_Stop"
+                span.set_attribute("opcua.node_id", node_id)
+                node = client.get_node(node_id)
+                await node.write_value(True)
+                reason_node = client.get_node(f"ns=2;s=Assets.{asset_id}.Emergency_Stop_Reason")
+                await reason_node.write_value(reason)
             log.info("Emergency stop issued for %s – reason: %s", asset_id, reason)
         except Exception as exc:
+            with tracer.start_as_current_span("opcua.emergency_stop_failure") as span:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
             log.critical(
                 "Critical: failed to issue emergency stop for %s (reason: %s): %s",
                 asset_id,
@@ -155,7 +168,8 @@ class OPCUAWriteBack:
                 pass
         async with self._lock:
             if self._client:
-                await self._client.disconnect()
+                with tracer.start_as_current_span("opcua.disconnect"):
+                    await self._client.disconnect()
                 self._client = None
         log.info("OPCUAWriteBack shutdown complete")
 
