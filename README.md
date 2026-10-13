@@ -73,7 +73,7 @@ Activate the environment, then install dependencies and launch the UI from the r
 # macOS / Linux
 # source .venv/bin/activate
 
-python -m pip install -r requirements_cloud.txt
+python -m pip install -r frontend/requirements.txt
 python -m streamlit run frontend/app.py
 ```
 
@@ -91,10 +91,10 @@ Then open [http://localhost:8000/docs](http://localhost:8000/docs) for the API e
 1. Push this repository to GitHub.
 2. In Streamlit Community Cloud, create an app from the repository and branch.
 3. Set **Main file path** to `frontend/app.py`.
-4. Set the dependency file to `requirements_cloud.txt` and use Python 3.11.
+4. Choose Python 3.11 in the deployment settings. Community Cloud automatically finds `frontend/requirements.txt` beside the app entrypoint.
 5. Add optional secrets in the app's Streamlit settings if the features you use require them.
 
-The repository includes `.streamlit/config.toml` for the dark dashboard theme. Streamlit Cloud uses `requirements_cloud.txt` for UI dependencies and `runtime.txt` (Python 3.11).
+The repository includes `.streamlit/config.toml` for the dark dashboard theme and `frontend/requirements.txt` for the focused Streamlit dependencies. The root `requirements.txt` remains available for the API, evaluation, and CI workflows.
 
 The copilot startup path validates its structured work-order payload with Pydantic; it does not require a Guardrails import during Streamlit startup.
 
@@ -176,7 +176,8 @@ frontend/
   data_engine.py Synthetic history and live telemetry
 eval/
   ragas_copilot_eval.py  50-scenario RAGAS audit
-requirements.txt         App and API dependencies
+requirements.txt         API, evaluation, and CI dependencies
+frontend/requirements.txt Streamlit Cloud dashboard dependencies
 runtime.txt              Python runtime selection
 ```
 
