@@ -6,7 +6,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-import time
 import random
 from collections import defaultdict, deque
 from datetime import datetime
@@ -114,6 +113,19 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
+
+def advance_live_tick() -> list[dict]:
+    """Generate and retain one simulator tick for the dashboard pages."""
+    readings = generate_live_tick()
+    for reading in readings:
+        history = st.session_state.live_hist[reading["asset_tag"]]
+        for name, value in reading.items():
+            if isinstance(value, (int, float)):
+                history[name].append(value)
+    st.session_state.latest_live_readings = readings
+    st.session_state.live_tick += 1
+    return readings
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🔧 PredMaint AI")
@@ -122,7 +134,10 @@ with st.sidebar:
     df_rows = len(st.session_state.df) if st.session_state.df is not None else 0
     st.markdown(f"**Model:** {'✅ Ready' if model_ok else '⚠️ Training...'}")
     st.markdown(f"**Dataset:** {df_rows:,} rows")
+    if st.button("Generate next live tick", use_container_width=True):
+        advance_live_tick()
     st.markdown(f"**Live Ticks:** {st.session_state.live_tick}")
+    st.caption("Live charts update when you generate a tick.")
     # Supabase connection status
     try:
         from backend.database import is_connected
@@ -153,16 +168,20 @@ with st.sidebar:
         "ℹ️ About",
     ], label_visibility="collapsed")
     st.divider()
-    st.caption("v3.0 · Live Data Always On")
+    st.caption("v3.0 · Interactive Live Simulator")
     st.markdown("""
 <div style='font-size:0.7rem;color:#8b949e;line-height:1.6'>
 Built with<br>
-🐍 Python 3.12<br>
+🐍 Python 3.11<br>
 ⚡ Streamlit 1.35<br>
 🤖 scikit-learn 1.4<br>
 📊 Plotly 5.22<br>
 🔍 SHAP 0.45
 </div>""", unsafe_allow_html=True)
+
+if "latest_live_readings" not in st.session_state:
+    advance_live_tick()
+live_readings = st.session_state.latest_live_readings
 
 
 # =============================================================================
@@ -172,13 +191,6 @@ if page == "🏠 Dashboard":
     st.markdown("## 🔧 Industrial Machine Predictive Maintenance")
     st.markdown("**Live data · AI predictions · Zero file upload required**")
     st.divider()
-
-    live_readings = generate_live_tick()
-    for r in live_readings:
-        for k, v in r.items():
-            if isinstance(v, (int, float)):
-                st.session_state.live_hist[r["asset_tag"]][k].append(v)
-    st.session_state.live_tick += 1
 
     df = st.session_state.df
     c1,c2,c3,c4,c5 = st.columns(5)
@@ -199,9 +211,6 @@ if page == "🏠 Dashboard":
         st.subheader("Live Fleet Status")
         fleet_rows = []
         for r in live_readings:
-            for k, v in r.items():
-                if isinstance(v, (int, float)):
-                    st.session_state.live_hist[r["asset_tag"]][k].append(v)
             # Only run ML on valid readings
             if model_ok and not r.get("malfunction"):
                 try:
@@ -247,12 +256,8 @@ if page == "🏠 Dashboard":
         for a in st.session_state.alert_log[:5]:
             st.markdown(f'<div class="aw">{a}</div>', unsafe_allow_html=True)
 
-    st.info("Live data auto-generated. Go to **Live Fleet Monitor** for real-time charts. "
+    st.info("Use **Generate next live tick** in the sidebar to update fleet readings and charts. "
             "Upload your own CSV in **Upload Custom Data**.")
-    time.sleep(2)
-    st.rerun()
-
-
 # =============================================================================
 # MAINTENANCE COPILOT (LANGGRAPH + RAG + SHAP)
 # =============================================================================
@@ -804,17 +809,10 @@ while True:
 # =============================================================================
 elif page == "🔴 Live Fleet Monitor":
     st.title("🔴 Live Fleet Monitor")
-    st.markdown("Real-time sensor stream. Auto-refreshes every 2 seconds.")
+    st.markdown("Explore simulated sensor readings over time. Generate a new tick from the sidebar.")
 
     selected = st.selectbox("Focus Asset",
         ["CNC-001","HYD-001","BLT-001","CMP-001","EOT-001"])
-
-    live_readings = generate_live_tick()
-    for r in live_readings:
-        for k, v in r.items():
-            if isinstance(v, (int, float)):
-                st.session_state.live_hist[r["asset_tag"]][k].append(v)
-    st.session_state.live_tick += 1
 
     snap = next((r for r in live_readings if r["asset_tag"] == selected), {})
     hist = {k: list(v) for k, v in st.session_state.live_hist[selected].items()}
@@ -865,10 +863,6 @@ elif page == "🔴 Live Fleet Monitor":
 
     with st.expander("Raw sensor data"):
         st.dataframe(pd.DataFrame([snap]), use_container_width=True)
-
-    time.sleep(2)
-    st.rerun()
-
 
 # =============================================================================
 # EDA EXPLORER  (uses auto-generated data, file upload optional)

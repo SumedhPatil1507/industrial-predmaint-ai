@@ -1,6 +1,8 @@
 """Fail-closed Guardrails and source-provenance checks for maintenance work orders."""
 from __future__ import annotations
 
+import json
+from functools import lru_cache
 from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +23,14 @@ class WorkOrderOutput(BaseModel):
     manual_citations: list[str]
 
 
+@lru_cache(maxsize=1)
+def _guardrails_schema_guard():
+    """Build Guardrails lazily so optional integrations cannot break app import."""
+    from guardrails import Guard
+
+    return Guard.from_pydantic(output_class=WorkOrderOutput)
+
+
 def validate_work_order(
     work_order: Mapping[str, Any],
     sources: list[Mapping[str, Any]],
@@ -31,13 +41,16 @@ def validate_work_order(
     function fails closed instead of trying to repair safety-critical text.
     """
     payload = dict(work_order)
-    # Validate directly with Pydantic. Guardrails' ``Guard.from_pydantic`` is
-    # not available in all supported Guardrails releases and was raising during
-    # module import, preventing Streamlit from starting at all.
+    # Validate the structured boundary with Guardrails AI and fail closed if
+    # the guard cannot load or rejects the payload. No LLM repair is permitted
+    # for safety procedures or OEM catalog identifiers.
     try:
+        guarded = _guardrails_schema_guard().parse(json.dumps(payload))
+        if getattr(guarded, "validation_passed", True) is False:
+            raise ValueError("Guardrails reported a schema validation failure")
         payload = WorkOrderOutput.model_validate(payload).model_dump()
     except Exception as exc:
-        raise ValueError("Invalid maintenance work order structure") from exc
+        raise ValueError("Guardrails rejected or could not validate the maintenance work order") from exc
 
     source_by_id = {str(source.get("vector_chunk_id")): source for source in sources}
     citations = payload.get("manual_citations", [])

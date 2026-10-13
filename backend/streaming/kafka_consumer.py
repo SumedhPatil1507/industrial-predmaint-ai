@@ -1,11 +1,7 @@
-"""Async Kafka ingestion and rolling sensor feature extraction.
-
-Messages are acknowledged only after ``record_handler`` has accepted the normalized
-record. The handler is the integration point for a durable feature sink (for example,
-an online store or a stream processing service).
-"""
+"""Async Kafka ingestion with causal sensor features and a TimescaleDB sink."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -15,17 +11,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping
 
+import asyncpg
 from aiokafka import AIOKafkaConsumer
 
 LOGGER = logging.getLogger(__name__)
 TOPIC = "industrial.sensors.v1"
-SENSOR_FIELDS = ("vibration", "temperature", "pressure", "acoustic")
+SENSOR_FIELDS = ("vibration", "thermal", "acoustic")
 RecordHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
 class RollingFeatures:
-    """Bounded, per-asset sample windows for the four sensor channels."""
+    """Bounded, per-asset rolling windows for RMS, kurtosis and crest factor."""
 
     window_size: int = 120
 
@@ -36,10 +33,10 @@ class RollingFeatures:
             lambda: deque(maxlen=self.window_size)
         )
 
-    def update(self, asset_id: str, plant_id: str, sensors: Mapping[str, float]) -> dict[str, float]:
+    def update(self, asset_id: str, sensors: Mapping[str, float]) -> dict[str, float]:
         output: dict[str, float] = {}
         for sensor in SENSOR_FIELDS:
-            values = self._windows[(asset_id, f"{plant_id}:{sensor}")]
+            values = self._windows[(asset_id, sensor)]
             value = float(sensors[sensor])
             if not math.isfinite(value):
                 raise ValueError(f"{sensor} must be finite")
@@ -48,15 +45,15 @@ class RollingFeatures:
             centered = [sample - mean for sample in values]
             second = sum(item * item for item in centered) / len(values)
             fourth = sum(item ** 4 for item in centered) / len(values)
-            prefix = sensor
-            output[f"{prefix}_rms"] = math.sqrt(sum(item * item for item in values) / len(values))
-            output[f"{prefix}_kurtosis"] = fourth / (second * second) if second else 0.0
-            output[f"{prefix}_crest_factor"] = max(abs(item) for item in values) / output[f"{prefix}_rms"] if output[f"{prefix}_rms"] else 0.0
+            rms = math.sqrt(sum(item * item for item in values) / len(values))
+            output[f"{sensor}_rms"] = rms
+            output[f"{sensor}_kurtosis"] = fourth / (second * second) if second else 0.0
+            output[f"{sensor}_crest_factor"] = max(map(abs, values)) / rms if rms else 0.0
         return output
 
 
 def normalize_payload(payload: bytes | str, features: RollingFeatures) -> dict[str, Any]:
-    """Decode and validate a sensor event, then attach causal rolling features."""
+    """Validate an event and attach causal rolling features."""
     try:
         raw = json.loads(payload)
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
@@ -68,42 +65,69 @@ def normalize_payload(payload: bytes | str, features: RollingFeatures) -> dict[s
         raise ValueError("asset_id is required")
     if not isinstance(plant_id, str) or not plant_id.strip():
         raise ValueError("plant_id is required")
-    event_time = raw.get("event_timestamp", raw.get("timestamp"))
-    if not isinstance(event_time, str):
+    timestamp = raw.get("event_timestamp", raw.get("timestamp"))
+    if not isinstance(timestamp, str):
         raise ValueError("event_timestamp (ISO-8601) is required")
     try:
-        parsed_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+        event_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("event_timestamp must be ISO-8601") from exc
-    if parsed_time.tzinfo is None:
+    if event_time.tzinfo is None:
         raise ValueError("event_timestamp must include a timezone")
-    sensor_values: dict[str, float] = {}
+    sensors: dict[str, float] = {}
     for field in SENSOR_FIELDS:
         try:
-            value = float(raw[field])
+            sensors[field] = float(raw[field])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"{field} must be numeric") from exc
-        if not math.isfinite(value):
+        if not math.isfinite(sensors[field]):
             raise ValueError(f"{field} must be finite")
-        sensor_values[field] = value
+    asset_id, plant_id = asset_id.strip(), plant_id.strip()
     return {
-        "asset_id": asset_id.strip(),
-        "plant_id": plant_id.strip(),
-        "event_timestamp": parsed_time.astimezone(timezone.utc),
-        **sensor_values,
-        **features.update(asset_id.strip(), plant_id.strip(), sensor_values),
+        "asset_id": asset_id,
+        "plant_id": plant_id,
+        "event_timestamp": event_time.astimezone(timezone.utc),
+        **sensors,
+        **features.update(asset_id, sensors),
     }
 
 
+async def insert_sensor_record(record: dict[str, Any], pool: asyncpg.Pool | None = None) -> None:
+    """Persist an event and its point-in-time features; failures propagate for Kafka retry."""
+    own_pool = pool is None
+    if own_pool:
+        dsn = os.getenv("TIMESCALEDB_DSN")
+        if not dsn:
+            raise RuntimeError("TIMESCALEDB_DSN is required for Kafka ingestion")
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+    assert pool is not None
+    try:
+        columns = SENSOR_FIELDS + tuple(
+            f"{sensor}_{stat}" for sensor in SENSOR_FIELDS
+            for stat in ("rms", "kurtosis", "crest_factor")
+        )
+        names = ", ".join(columns)
+        placeholders = ", ".join(f"${index}" for index in range(1, len(columns) + 4))
+        values = [record["event_timestamp"], record["asset_id"], record["plant_id"]]
+        values.extend(record[column] for column in columns)
+        async with pool.acquire() as connection:
+            await connection.execute(
+                f"INSERT INTO sensor_telemetry (event_timestamp, asset_id, plant_id, {names}) "
+                f"VALUES ({placeholders}) ON CONFLICT (event_timestamp, asset_id) DO NOTHING",
+                *values,
+            )
+    finally:
+        if own_pool:
+            await pool.close()
+
+
 async def consume(
-    record_handler: RecordHandler,
-    *,
-    bootstrap_servers: str | None = None,
+    record_handler: RecordHandler = insert_sensor_record,
+    *, bootstrap_servers: str | None = None,
     topic: str = TOPIC,
     group_id: str = "predmaint-feature-ingestion",
     window_size: int = 120,
 ) -> None:
-    """Consume Kafka records, extract rolling features, and call a durable sink."""
     consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=bootstrap_servers or os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
@@ -118,12 +142,9 @@ async def consume(
             try:
                 record = normalize_payload(message.value, rolling)
             except ValueError as exc:
-                # Poison records are logged and committed so a malformed message cannot
-                # block its partition. Sink failures are not swallowed or committed.
                 LOGGER.warning("Dropping invalid telemetry from %s: %s", topic, exc)
                 await consumer.commit()
                 continue
-            # Sink failures deliberately escape so Kafka can redeliver the message.
             await record_handler(record)
             await consumer.commit()
     finally:
@@ -131,10 +152,7 @@ async def consume(
 
 
 async def main() -> None:
-    async def log_record(record: dict[str, Any]) -> None:
-        LOGGER.info("Ingested telemetry for %s at %s", record["asset_id"], record["event_timestamp"])
-
-    await consume(log_record)
+    await consume()
 
 
 if __name__ == "__main__":

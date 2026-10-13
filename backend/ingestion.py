@@ -171,7 +171,7 @@ def parse_opcua_frame(
         status  = node.get("StatusCode", "Good")
 
         # Skip bad-quality OPC-UA readings
-        if status not in ("Good", "Uncertain"):
+        if status != "Good":
             logger.warning(f"[OPC-UA] Bad status for {node_id}: {status}")
             continue
 

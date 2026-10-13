@@ -87,6 +87,12 @@ class SafetyInterlockGate:
     ) -> InterlockDecision:
         """Return a decision from sensor physics only; LLM text cannot trigger it."""
         del llm_recommendation  # explicitly not an input to safety authorization
+        if reading.get("validation_status", "OK") != "OK":
+            return InterlockDecision(
+                InterlockAction.NONE,
+                "Telemetry status is not validated as good",
+                None,
+            )
         result = validate_reading(dict(reading))
         if not result.is_valid or result.cleaned_reading is None:
             return InterlockDecision(

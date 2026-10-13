@@ -85,18 +85,37 @@ def format_context(document: dict[str, Any]) -> str:
 
 def response_for(scenario: dict[str, Any], documents: list[dict[str, Any]]) -> str:
     if not documents:
-        return "No matching OEM manual was retrieved; escalate for specialist review."
+        response = {
+            "verdict": "ANOMALY_DETECTED",
+            "reasoning": "No matching OEM manual was retrieved for this failure scenario.",
+            "recommendation": "L3 escalation; no matching OEM SOP was retrieved, request specialist review.",
+            "next_steps": ["Step 1: Escalate to an OEM specialist for a manual-backed diagnosis."],
+        }
+        return json.dumps(response, ensure_ascii=False)
+
+    # Score the answer shape exposed by /predict, /advise, and /copilot/diagnose.
+    # The retrieved document is the only source for SOP IDs and repair guidance.
     doc = documents[0]
-    category = scenario["category"]
-    if category == "symptoms":
-        return f"{doc.get('title', '')}. {doc.get('root_cause_analysis', '')}"
-    if category == "failure_mode":
-        return " ".join(doc.get("sop_steps", []))
-    if category == "safety":
-        return str(doc.get("safety_protocol", ""))
-    if category == "parts":
-        return "; ".join(doc.get("required_parts", []))
-    return str(doc.get("tolerances", ""))
+    steps: list[str] = []
+    if doc.get("safety_protocol"):
+        steps.append(f"Step 1: Apply the OEM safety protocol: {doc['safety_protocol']}")
+    first_sop_step = len(steps) + 1
+    steps.extend(
+        f"Step {index}: {step}"
+        for index, step in enumerate(doc.get("sop_steps", []), first_sop_step)
+    )
+    if not steps:
+        steps = ["Step 1: Escalate to a qualified maintenance specialist for review."]
+    response = {
+        "verdict": "CRITICAL_ANOMALY_DETECTED",
+        "reasoning": (
+            f"Industrial failure scenario: {scenario['user_input']} "
+            f"Retrieved OEM root cause: {doc.get('root_cause_analysis', '')}"
+        ),
+        "recommendation": f"L2 escalation; follow OEM SOP {doc['manual_id']}.",
+        "next_steps": steps,
+    }
+    return json.dumps(response, ensure_ascii=False)
 
 
 async def run_evaluation(output_path: Path, model_name: str = "gpt-4o-mini") -> dict[str, Any]:

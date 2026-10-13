@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Optional
 from backend.timescaledb import init_pool, close_pool, insert_audit_log, insert_prediction
-from backend.ot_writeback import OPCUAWriteBack
+from backend.opcua_client import OPCUAWriteBackClient
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,12 +36,8 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# Global write‑back handler (configured via env vars)
-_opcua_writeback = OPCUAWriteBack(
-    endpoint=os.getenv("OPCUA_ENDPOINT", "opc.tcp://localhost:4840"),
-    node_id=os.getenv("OPCUA_EMERGENCY_NODE", "ns=2;s=Emergency_Stop_Trigger"),
-    auth={"username": os.getenv("OPCUA_USER"), "password": os.getenv("OPCUA_PASSWORD")}
-)
+# Every automatic PLC write is authorized from validated sensor readings.
+_opcua_writeback = OPCUAWriteBackClient()
 
 
 app.add_middleware(
@@ -195,6 +191,13 @@ async def ingest_mqtt(msg: MQTTPayload):
         return {**normalised, "prediction": None, "probability": None,
                 "risk_level": "SENSOR_MALFUNCTION"}
 
+    # Run the physical interlock independently of model predictions. The gate
+    # ignores all advisory/LLM content and fails closed on invalid telemetry.
+    interlock = await _opcua_writeback.execute_if_required(
+        asset_tag,
+        normalised,
+    )
+
     if ml_engine.model_exists():
         try:
             result = ml_engine.predict_single(normalised)
@@ -203,7 +206,14 @@ async def ingest_mqtt(msg: MQTTPayload):
             logger.error(f"Prediction failed for MQTT reading: {e}")
 
     _prev_readings[asset_tag] = normalised
-    return normalised
+    return {
+        **normalised,
+        "safety_interlock": {
+            "action": interlock.action.value,
+            "reason": interlock.reason,
+            "speed_limit_rpm": interlock.speed_limit_rpm,
+        },
+    }
 
 
 # ── OPC-UA Ingestion ──────────────────────────────────────────────────────────
@@ -228,6 +238,11 @@ async def ingest_opcua(frame: OPCUAFrame):
         return {**normalised, "prediction": None, "probability": None,
                 "risk_level": "SENSOR_MALFUNCTION"}
 
+    interlock = await _opcua_writeback.execute_if_required(
+        frame.asset_tag,
+        normalised,
+    )
+
     if ml_engine.model_exists():
         try:
             result = ml_engine.predict_single(normalised)
@@ -236,7 +251,14 @@ async def ingest_opcua(frame: OPCUAFrame):
             logger.error(f"Prediction failed for OPC-UA reading: {e}")
 
     _prev_readings[frame.asset_tag] = normalised
-    return normalised
+    return {
+        **normalised,
+        "safety_interlock": {
+            "action": interlock.action.value,
+            "reason": interlock.reason,
+            "speed_limit_rpm": interlock.speed_limit_rpm,
+        },
+    }
 
 
 # ── SHAP ──────────────────────────────────────────────────────────────────────

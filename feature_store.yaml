@@ -1,8 +1,14 @@
 project: predmaint_industrial
 registry: data/feast/registry.db
 provider: local
+offline_store:
+  type: postgres
+  host: ${FEAST_POSTGRES_HOST:"localhost"}
+  port: ${FEAST_POSTGRES_PORT:"5432"}
+  database: ${FEAST_POSTGRES_DATABASE:"predmaint"}
+  db_schema: public
+  user: ${FEAST_POSTGRES_USER:"postgres"}
+  password: ${FEAST_POSTGRES_PASSWORD:"postgres"}
 online_store:
   type: sqlite
   path: data/feast/online_store.db
-offline_store:
-  type: file

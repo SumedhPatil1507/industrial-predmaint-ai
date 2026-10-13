@@ -44,6 +44,31 @@ SELECT create_hypertable('predictions', 'timestamp', if_not_exists => TRUE);
 SELECT create_hypertable('audit_logs', 'timestamp', if_not_exists => TRUE);
 -- alerts are low‑volume; keep as regular table (optional hypertable)
 
+-- High-frequency sensor events and causal rolling features used by Feast.
+CREATE TABLE IF NOT EXISTS sensor_telemetry (
+    event_timestamp TIMESTAMPTZ NOT NULL,
+    asset_id TEXT NOT NULL,
+    plant_id TEXT NOT NULL,
+    vibration DOUBLE PRECISION NOT NULL,
+    thermal DOUBLE PRECISION NOT NULL,
+    acoustic DOUBLE PRECISION NOT NULL,
+    vibration_rms DOUBLE PRECISION NOT NULL,
+    vibration_kurtosis DOUBLE PRECISION NOT NULL,
+    vibration_crest_factor DOUBLE PRECISION NOT NULL,
+    thermal_rms DOUBLE PRECISION NOT NULL,
+    thermal_kurtosis DOUBLE PRECISION NOT NULL,
+    thermal_crest_factor DOUBLE PRECISION NOT NULL,
+    acoustic_rms DOUBLE PRECISION NOT NULL,
+    acoustic_kurtosis DOUBLE PRECISION NOT NULL,
+    acoustic_crest_factor DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (event_timestamp, asset_id)
+);
+SELECT create_hypertable('sensor_telemetry', 'event_timestamp', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_sensor_telemetry_asset_ts
+    ON sensor_telemetry (asset_id, event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sensor_telemetry_plant_ts
+    ON sensor_telemetry (plant_id, event_timestamp DESC);
+
 -- -----------------------------------------------------------
 -- 3. Indexes for fast lookup
 -- -----------------------------------------------------------

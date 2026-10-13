@@ -59,8 +59,8 @@ Charts are built with Plotly and rendered with Streamlit's `st.plotly_chart`. Ho
 Use Python 3.11, matching the repository's `runtime.txt`.
 
 ```bash
-git clone https://github.com/<your-account>/machine-demand-prediction-project.git
-cd machine-demand-prediction-project
+git clone https://github.com/SumedhPatil1507/industrial-predmaint-ai.git
+cd industrial-predmaint-ai
 python -m venv .venv
 ```
 
@@ -73,13 +73,14 @@ Activate the environment, then install dependencies and launch the UI from the r
 # macOS / Linux
 # source .venv/bin/activate
 
-python -m pip install -r requirements.txt
+python -m pip install -r requirements_cloud.txt
 python -m streamlit run frontend/app.py
 ```
 
-The app generates sample industrial telemetry and trains a model if compatible saved model files are not present. No API server is needed for the Streamlit dashboard. To run the optional REST and WebSocket backend in a second terminal:
+The dashboard dependency file keeps the Streamlit install focused on the UI, charts, model, and Copilot features. The app generates sample industrial telemetry and trains a model if compatible saved model files are not present. Use **Generate next live tick** in the sidebar to advance the simulated fleet and update its charts. Plots are interactive: hover for readings, zoom or pan, and click legend entries to toggle series. No API server is needed for the Streamlit dashboard. To run the optional REST and WebSocket backend in a second terminal, install the full requirements first:
 
 ```bash
+python -m pip install -r requirements.txt
 python -m uvicorn backend.main:app --reload --port 8000
 ```
 
@@ -90,8 +91,10 @@ Then open [http://localhost:8000/docs](http://localhost:8000/docs) for the API e
 1. Push this repository to GitHub.
 2. In Streamlit Community Cloud, create an app from the repository and branch.
 3. Set **Main file path** to `frontend/app.py`.
-4. Keep the repository-root `requirements.txt` as the dependency file and use Python 3.11.
+4. Set the dependency file to `requirements_cloud.txt` and use Python 3.11.
 5. Add optional secrets in the app's Streamlit settings if the features you use require them.
+
+The repository includes `.streamlit/config.toml` for the dark dashboard theme. Streamlit Cloud uses `requirements_cloud.txt` for UI dependencies and `runtime.txt` (Python 3.11).
 
 The copilot startup path validates its structured work-order payload with Pydantic; it does not require a Guardrails import during Streamlit startup.
 
@@ -185,10 +188,17 @@ Copy `.env.example` to `.env` for local development. Secrets are optional for th
 |---|---|
 | `OPENAI_API_KEY` | Optional LLM features and running the RAGAS evaluation |
 | `SUPABASE_URL`, `SUPABASE_KEY` | Optional hosted persistence |
-| `OPCUA_ENDPOINT`, `OPCUA_EMERGENCY_NODE` | Optional OPC-UA write-back integration |
+| `OPCUA_ENDPOINT_URL`, `OPCUA_EMERGENCY_STOP_NODE`, `OPCUA_SPEED_LIMIT_NODE` | OPC-UA endpoint and PLC tags for the safety-gated write-back client |
+| `OPCUA_USER`, `OPCUA_PASSWORD`, `OPCUA_SECURITY_STRING` | Optional OPC-UA authentication and message security |
 | `SMTP_HOST`, `SLACK_BOT_TOKEN` | Optional notifications |
 
 Never commit `.env` or Streamlit secrets to GitHub.
+
+Automatic PLC writes from `/ingest/opcua` are authorized only by validated
+telemetry thresholds in `backend/opcua_client.py`. Invalid or non-Good OPC-UA
+readings fail closed; model and LLM recommendations cannot authorize an
+emergency stop or speed throttle. Confirm the configured limits and PLC node
+IDs against the specific machine before enabling write access.
 
 ## 🛠️ Stack
 

@@ -303,7 +303,7 @@ def work_order_drafter_node(state: CopilotState) -> Dict[str, Any]:
     }
 
     # Reject any deviation from retrieved OEM safety procedures, citations, or BOM.
-    validate_work_order(structured_wo, retrieved)
+    structured_wo = validate_work_order(structured_wo, retrieved)
 
     # Build detailed Markdown Work Order
     escalation_badge = ""
