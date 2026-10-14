@@ -10,6 +10,8 @@ from backend.copilot.manuals_data import get_all_manuals, get_manuals_for_machin
 from backend.copilot.rag_engine import get_rag_indexer, NOVELTY_SIMILARITY_THRESHOLD
 from backend.copilot.shap_explainer import explain_reading_shap
 from backend.copilot.agent import run_maintenance_copilot, get_copilot_graph
+from backend.copilot.response_schema import build_explainable_response
+from eval.ragas_copilot_eval import build_scenarios
 
 
 # ── Equipment Manuals & SOP Dataset ──────────────────────────────────────────
@@ -138,3 +140,42 @@ def test_copilot_novel_anomaly_escalation():
     assert len(result["graph_trace"]) == 6
     wo_struct = result["work_order_structured"]
     assert wo_struct["priority"].startswith("P1") or wo_struct["priority"].startswith("P2")
+
+
+def test_explainable_work_order_contract_and_manual_grounding():
+    response = build_explainable_response(
+        {"fft_peak_hz": 2400},
+        prediction={"risk_level": "CRITICAL", "probability": 0.92},
+        copilot_result={
+            "escalation_tier": "LEVEL_2_SENIOR_TECH",
+            "shap_top_features": [
+                {"display_name": "Vibration_Z_Axis", "shap_impact": 3.42}
+            ],
+            "work_order_structured": {
+                "matched_sop_id": "PUMP-SOP-001",
+                "safety_protocol": "LOTO-PMP-001 at main breaker",
+                "recommended_actions": ["1. Replace drive end bearing"],
+                "required_parts": ["BRG-6208-C3"],
+                "clearance_tolerances": "Laser alignment <0.03mm",
+            },
+        },
+    )
+
+    assert set(response) == {"verdict", "reasoning", "recommendation", "next_steps"}
+    assert response["verdict"] == "CRITICAL_ANOMALY_DETECTED"
+    assert "Vibration_Z_Axis +3.42 SHAP" in response["reasoning"]
+    assert "2.4 kHz" in response["reasoning"]
+    assert "PUMP-SOP-001" in response["recommendation"]
+    assert response["next_steps"][0] == "Step 1: Apply the cited OEM safety protocol: LOTO-PMP-001 at main breaker"
+    assert any("BRG-6208-C3" in step for step in response["next_steps"])
+    assert any("<0.03mm" in step for step in response["next_steps"])
+    assert all(step.startswith(f"Step {index}:") for index, step in enumerate(response["next_steps"], 1))
+
+
+def test_ragas_audit_dataset_contains_50_industrial_scenarios():
+    scenarios = build_scenarios()
+    assert len(scenarios) == 50
+    assert len({scenario["scenario_id"] for scenario in scenarios}) == 50
+    assert {scenario["category"] for scenario in scenarios} == {
+        "symptoms", "failure_mode", "safety", "parts", "tolerances"
+    }
