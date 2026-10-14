@@ -1,4 +1,4 @@
-"""Fail-closed Guardrails and source-provenance checks for maintenance work orders."""
+"""Pydantic schema and source-provenance checks for maintenance work orders."""
 from __future__ import annotations
 
 import json
@@ -25,10 +25,16 @@ class WorkOrderOutput(BaseModel):
 
 @lru_cache(maxsize=1)
 def _guardrails_schema_guard():
-    """Build Guardrails lazily so optional integrations cannot break app import."""
+    """Build Guardrails when its optional Pydantic adapter is available."""
     from guardrails import Guard
 
-    return Guard.from_pydantic(output_class=WorkOrderOutput)
+    # Guardrails' public API has varied across releases, and some versions
+    # expose ``Guard`` as a Pydantic model without the from_pydantic adapter.
+    # The Pydantic validation below remains authoritative in that case.
+    from_pydantic = getattr(Guard, "from_pydantic", None)
+    if not callable(from_pydantic):
+        return None
+    return from_pydantic(output_class=WorkOrderOutput)
 
 
 def validate_work_order(
@@ -39,11 +45,13 @@ def validate_work_order(
 
     The internal manual corpus is the approved procedure and part catalog. This
     function fails closed instead of trying to repair safety-critical text.
+    Guardrails is an optional additional schema check; Pydantic and the explicit
+    source checks always run, including when its adapter is unavailable.
     """
     payload = dict(work_order)
-    # Guardrails AI currently supports Python <3.14. On newer runtimes, use
-    # the same Pydantic schema directly; all explicit citation, safety text,
-    # action, and BOM checks below remain mandatory. No LLM repair is permitted.
+    # Guardrails is an optional schema check. The same Pydantic schema and all
+    # explicit citation, safety text, action, and BOM checks remain mandatory.
+    # No LLM repair is permitted.
     try:
         try:
             guard = _guardrails_schema_guard()
@@ -55,7 +63,7 @@ def validate_work_order(
                 raise ValueError("Guardrails reported a schema validation failure")
         payload = WorkOrderOutput.model_validate(payload).model_dump()
     except Exception as exc:
-        raise ValueError("Guardrails rejected or could not validate the maintenance work order") from exc
+        raise ValueError("Work order schema validation failed") from exc
 
     source_by_id = {str(source.get("vector_chunk_id")): source for source in sources}
     citations = payload.get("manual_citations", [])
