@@ -91,10 +91,10 @@ Then open [http://localhost:8000/docs](http://localhost:8000/docs) for the API e
 1. Push this repository to GitHub.
 2. In Streamlit Community Cloud, create an app from the repository and branch.
 3. Set **Main file path** to `frontend/app.py`.
-4. In **Advanced settings**, choose Python 3.14 (or Python 3.11). Community Cloud automatically finds `frontend/requirements.txt` beside the app entrypoint. That file pins NumPy, SciPy, scikit-learn, SHAP, pandas, and PyArrow releases with CPython 3.14 Linux wheels.
+4. In **Advanced settings**, choose Python 3.11. Community Cloud uses the Python version selected in this dialog; `runtime.txt` does not switch the version of an already deployed app. The app entrypoint's directory contains the focused dependency file, `frontend/requirements.txt`, which selects prebuilt wheels for Python 3.11.
 5. Add optional secrets in the app's Streamlit settings if the features you use require them.
 
-The FastAPI Docker image and CI use Python 3.11; the Streamlit Cloud app uses its own interpreter and the separate `frontend/requirements.txt`. Pushing a change to that dependency file triggers a Cloud rebuild. The dashboard uses Pydantic validation and explicit source checks when Guardrails AI is unavailable on Python 3.14.
+The FastAPI Docker image and CI use Python 3.11; the Streamlit Cloud app uses its configured interpreter and `frontend/requirements.txt`. `backend/main.py` is the FastAPI service, not the Streamlit entrypoint. If the Streamlit app was originally deployed with Python 3.14, Community Cloud requires deleting and redeploying it to select Python 3.11. A build log that compiles pandas from source usually means the app is using a different requirements file or an older branch/commit; verify the app's repository, branch, and entrypoint before rebuilding.
 
 The repository includes `.streamlit/config.toml` for the dark dashboard theme and `frontend/requirements.txt` for the focused Streamlit dependencies. The root `requirements.txt` remains available for the API, evaluation, and CI workflows.
 
