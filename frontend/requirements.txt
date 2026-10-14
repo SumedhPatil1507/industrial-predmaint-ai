@@ -9,7 +9,7 @@ scipy==1.18.1 ; python_version >= "3.12"
 scipy==1.13.0 ; python_version < "3.12"
 scikit-learn==1.9.1 ; python_version >= "3.12"
 scikit-learn==1.4.2 ; python_version < "3.12"
-shap==0.53.0 ; python_version >= "3.12"
+shap==0.51.0 ; python_version >= "3.12"
 shap==0.45.1 ; python_version < "3.12"
 plotly==7.1.0
 joblib==1.6.0
