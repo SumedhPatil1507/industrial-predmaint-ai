@@ -91,10 +91,10 @@ Then open [http://localhost:8000/docs](http://localhost:8000/docs) for the API e
 1. Push this repository to GitHub.
 2. In Streamlit Community Cloud, create an app from the repository and branch.
 3. Set **Main file path** to `frontend/app.py`.
-4. In **Advanced settings**, choose Python 3.11. Community Cloud automatically finds `frontend/requirements.txt` beside the app entrypoint. The pinned NumPy, SciPy, scikit-learn, SHAP, and pandas versions target Python 3.11; Python 3.14 can trigger unsupported source builds for these compiled packages.
+4. In **Advanced settings**, choose Python 3.14 (or Python 3.11). Community Cloud automatically finds `frontend/requirements.txt` beside the app entrypoint. That file pins NumPy, SciPy, scikit-learn, SHAP, pandas, and PyArrow releases with CPython 3.14 Linux wheels.
 5. Add optional secrets in the app's Streamlit settings if the features you use require them.
 
-If an existing Community Cloud app was created with a different Python version, changing `runtime.txt` or `.python-version` does not change that app's interpreter. Community Cloud requires redeploying the app with Python 3.11 selected in **Advanced settings**. For an app already deployed, follow Streamlit's [Python version upgrade steps](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app/upgrade-python); save the app's repository, branch, entrypoint, custom subdomain, and secrets before redeploying.
+The FastAPI Docker image and CI use Python 3.11; the Streamlit Cloud app uses its own interpreter and the separate `frontend/requirements.txt`. Pushing a change to that dependency file triggers a Cloud rebuild. The dashboard uses Pydantic validation and explicit source checks when Guardrails AI is unavailable on Python 3.14.
 
 The repository includes `.streamlit/config.toml` for the dark dashboard theme and `frontend/requirements.txt` for the focused Streamlit dependencies. The root `requirements.txt` remains available for the API, evaluation, and CI workflows.
 

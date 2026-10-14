@@ -41,13 +41,18 @@ def validate_work_order(
     function fails closed instead of trying to repair safety-critical text.
     """
     payload = dict(work_order)
-    # Validate the structured boundary with Guardrails AI and fail closed if
-    # the guard cannot load or rejects the payload. No LLM repair is permitted
-    # for safety procedures or OEM catalog identifiers.
+    # Guardrails AI currently supports Python <3.14. On newer runtimes, use
+    # the same Pydantic schema directly; all explicit citation, safety text,
+    # action, and BOM checks below remain mandatory. No LLM repair is permitted.
     try:
-        guarded = _guardrails_schema_guard().parse(json.dumps(payload))
-        if getattr(guarded, "validation_passed", True) is False:
-            raise ValueError("Guardrails reported a schema validation failure")
+        try:
+            guard = _guardrails_schema_guard()
+        except ImportError:
+            guard = None
+        if guard is not None:
+            guarded = guard.parse(json.dumps(payload))
+            if getattr(guarded, "validation_passed", True) is False:
+                raise ValueError("Guardrails reported a schema validation failure")
         payload = WorkOrderOutput.model_validate(payload).model_dump()
     except Exception as exc:
         raise ValueError("Guardrails rejected or could not validate the maintenance work order") from exc
